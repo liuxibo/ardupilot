@@ -12,12 +12,9 @@
 
 #include <AP_HAL/AP_HAL.h>
 #include <AP_HAL/utility/dsm.h>
-#include <AP_HAL/utility/sumd.h>
-#include <AP_HAL/utility/st24.h>
-#include <AP_HAL/utility/srxl.h>
+#include <AP_RCProtocol/AP_RCProtocol_SBUS.h>
 
 #include "RCInput.h"
-#include "sbus.h"
 
 #define MIN_NUM_CHANNELS 5
 
@@ -48,11 +45,13 @@ uint8_t RCInput::num_channels()
     return _num_channels;
 }
 
+void RCInput::set_num_channels(uint8_t num)
+{
+    _num_channels = num;
+}
+
 uint16_t RCInput::read(uint8_t ch)
 {
-    if (_override[ch]) {
-        return _override[ch];
-    }
     if (ch >= _num_channels) {
         return 0;
     }
@@ -67,39 +66,6 @@ uint8_t RCInput::read(uint16_t* periods, uint8_t len)
     }
     return len;
 }
-
-bool RCInput::set_overrides(int16_t *overrides, uint8_t len)
-{
-    bool res = false;
-    if(len > LINUX_RC_INPUT_NUM_CHANNELS){
-        len = LINUX_RC_INPUT_NUM_CHANNELS;
-    }
-    for (uint8_t i = 0; i < len; i++) {
-        res |= set_override(i, overrides[i]);
-    }
-    return res;
-}
-
-bool RCInput::set_override(uint8_t channel, int16_t override)
-{
-    if (override < 0) return false; /* -1: no change. */
-    if (channel < LINUX_RC_INPUT_NUM_CHANNELS) {
-        _override[channel] = override;
-        if (override != 0) {
-            rc_input_count++;
-            return true;
-        }
-    }
-    return false;
-}
-
-void RCInput::clear_overrides()
-{
-    for (uint8_t i = 0; i < LINUX_RC_INPUT_NUM_CHANNELS; i++) {
-       _override[i] = 0;
-    }
-}
-
 
 /*
   process a PPM-sum pulse of the given width
@@ -213,10 +179,10 @@ void RCInput::_process_sbus_pulse(uint16_t width_s0, uint16_t width_s1)
         }
         uint16_t values[LINUX_RC_INPUT_NUM_CHANNELS];
         uint16_t num_values=0;
-        bool sbus_failsafe=false, sbus_frame_drop=false;
-        if (sbus_decode(bytes, values, &num_values,
-                        &sbus_failsafe, &sbus_frame_drop,
-                        LINUX_RC_INPUT_NUM_CHANNELS) &&
+        bool sbus_failsafe=false;
+        if (AP_RCProtocol_SBUS::sbus_decode(bytes, values, &num_values,
+                                            sbus_failsafe,
+                                            LINUX_RC_INPUT_NUM_CHANNELS) &&
             num_values >= MIN_NUM_CHANNELS) {
             for (i=0; i<num_values; i++) {
                 _pwm_values[i] = values[i];
@@ -314,6 +280,14 @@ reset:
     memset(&dsm_state, 0, sizeof(dsm_state));
 }
 
+void RCInput::_process_pwm_pulse(uint16_t channel, uint16_t width_s0, uint16_t width_s1)
+{
+    if (channel < _num_channels) {
+        _pwm_values[channel] = width_s1; // range: 700usec ~ 2300usec
+        rc_input_count++;
+    }
+}
+
 /*
   process a RC input pulse of the given width
  */
@@ -352,229 +326,4 @@ void RCInput::_update_periods(uint16_t *periods, uint8_t len)
     }
     _num_channels = len;
     rc_input_count++;
-}
-
-
-/*
-  add some bytes of input in DSM serial stream format, coping with partial packets
- */
-bool RCInput::add_dsm_input(const uint8_t *bytes, size_t nbytes)
-{
-    if (nbytes == 0) {
-        return false;
-    }
-    const uint8_t dsm_frame_size = sizeof(dsm.frame);
-    bool ret = false;
-    
-    uint32_t now = AP_HAL::millis();
-    if (now - dsm.last_input_ms > 5) {
-        // resync based on time
-        dsm.partial_frame_count = 0;
-    }
-    dsm.last_input_ms = now;
-
-    while (nbytes > 0) {
-        size_t n = nbytes;
-        if (dsm.partial_frame_count + n > dsm_frame_size) {
-            n = dsm_frame_size - dsm.partial_frame_count;
-        }
-        if (n > 0) {
-            memcpy(&dsm.frame[dsm.partial_frame_count], bytes, n);
-            dsm.partial_frame_count += n;
-            nbytes -= n;
-            bytes += n;
-        }
-
-	if (dsm.partial_frame_count == dsm_frame_size) {
-            dsm.partial_frame_count = 0;
-            uint16_t values[16] {};
-            uint16_t num_values=0;
-            /*
-              we only accept input when nbytes==0 as dsm is highly
-              sensitive to framing, and extra bytes may be an
-              indication this is really SRXL
-             */
-            if (dsm_decode(AP_HAL::micros64(), dsm.frame, values, &num_values, 16) &&
-                num_values >= MIN_NUM_CHANNELS &&
-                nbytes == 0) {
-                for (uint8_t i=0; i<num_values; i++) {
-                    if (values[i] != 0) {
-                        _pwm_values[i] = values[i];
-                    }
-                }
-                /*
-                  the apparent number of channels can change on DSM,
-                  as they are spread across multiple frames. We just
-                  use the max num_values we get
-                 */
-                if (num_values > _num_channels) {
-                    _num_channels = num_values;
-                }
-                rc_input_count++;
-#if 0
-                printf("Decoded DSM %u channels %u %u %u %u %u %u %u %u\n",
-                       (unsigned)num_values,
-                       values[0], values[1], values[2], values[3], values[4], values[5], values[6], values[7]);
-#endif
-                ret = true;
-            }
-        }
-    }
-    return ret;
-}
-
-
-/*
-  add some bytes of input in SUMD serial stream format, coping with partial packets
- */
-bool RCInput::add_sumd_input(const uint8_t *bytes, size_t nbytes)
-{
-    uint16_t values[LINUX_RC_INPUT_NUM_CHANNELS];
-    uint8_t rssi;
-    uint8_t rx_count;
-    uint16_t channel_count;
-    bool ret = false;
-    
-    while (nbytes > 0) {
-        if (sumd_decode(*bytes++, &rssi, &rx_count, &channel_count, values, LINUX_RC_INPUT_NUM_CHANNELS) == 0) {
-            if (channel_count > LINUX_RC_INPUT_NUM_CHANNELS) {
-                continue;
-            }
-            for (uint8_t i=0; i<channel_count; i++) {
-                if (values[i] != 0) {
-                    _pwm_values[i] = values[i];
-                }
-            }
-            _num_channels = channel_count;
-            rc_input_count++;
-            ret = true;
-        }
-        nbytes--;
-    }
-    return ret;
-}
-
-/*
-  add some bytes of input in ST24 serial stream format, coping with partial packets
- */
-bool RCInput::add_st24_input(const uint8_t *bytes, size_t nbytes)
-{
-    uint16_t values[LINUX_RC_INPUT_NUM_CHANNELS];
-    uint8_t rssi;
-    uint8_t rx_count;
-    uint16_t channel_count;
-    bool ret = false;
-    
-    while (nbytes > 0) {
-        if (st24_decode(*bytes++, &rssi, &rx_count, &channel_count, values, LINUX_RC_INPUT_NUM_CHANNELS) == 0) {
-            if (channel_count > LINUX_RC_INPUT_NUM_CHANNELS) {
-                continue;
-            }
-            for (uint8_t i=0; i<channel_count; i++) {
-                if (values[i] != 0) {
-                    _pwm_values[i] = values[i];
-                }
-            }
-            _num_channels = channel_count;
-            rc_input_count++;
-            ret = true;
-        }
-        nbytes--;
-    }
-    return ret;
-}
-
-/*
-  add some bytes of input in SRXL serial stream format, coping with partial packets
- */
-bool RCInput::add_srxl_input(const uint8_t *bytes, size_t nbytes)
-{
-    uint16_t values[LINUX_RC_INPUT_NUM_CHANNELS];
-    uint8_t channel_count;
-    uint64_t now = AP_HAL::micros64();
-    bool ret = false;
-    bool failsafe_state;
-    
-    while (nbytes > 0) {
-        if (srxl_decode(now, *bytes++, &channel_count, values, LINUX_RC_INPUT_NUM_CHANNELS, &failsafe_state) == 0) {
-            if (channel_count > LINUX_RC_INPUT_NUM_CHANNELS) {
-                continue;
-            }
-            for (uint8_t i=0; i<channel_count; i++) {
-                _pwm_values[i] = values[i];
-            }
-            _num_channels = channel_count;
-            if (failsafe_state == false) {
-                rc_input_count++;
-            }
-            ret = true;
-        }
-        nbytes--;
-    }
-    return ret;
-}
-
-
-/*
-  add some bytes of input in SBUS serial stream format, coping with partial packets
- */
-void RCInput::add_sbus_input(const uint8_t *bytes, size_t nbytes)
-{
-    if (nbytes == 0) {
-        return;
-    }
-    const uint8_t sbus_frame_size = sizeof(sbus.frame);
-
-    uint32_t now = AP_HAL::millis();
-    if (now - sbus.last_input_ms > 5) {
-        // resync based on time
-        sbus.partial_frame_count = 0;
-    }
-    sbus.last_input_ms = now;
-
-    while (nbytes > 0) {
-        size_t n = nbytes;
-        if (sbus.partial_frame_count + n > sbus_frame_size) {
-            n = sbus_frame_size - sbus.partial_frame_count;
-        }
-        if (n > 0) {
-            memcpy(&sbus.frame[sbus.partial_frame_count], bytes, n);
-            sbus.partial_frame_count += n;
-            nbytes -= n;
-            bytes += n;
-        }
-
-	if (sbus.partial_frame_count == sbus_frame_size) {
-            sbus.partial_frame_count = 0;
-            uint16_t values[16] {};
-            uint16_t num_values=0;
-            bool sbus_failsafe;
-            bool sbus_frame_drop;
-            if (sbus_decode(sbus.frame, values, &num_values, &sbus_failsafe, &sbus_frame_drop, 16) &&
-                num_values >= MIN_NUM_CHANNELS) {
-                for (uint8_t i=0; i<num_values; i++) {
-                    if (values[i] != 0) {
-                        _pwm_values[i] = values[i];
-                    }
-                }
-                /*
-                  the apparent number of channels can change on SBUS,
-                  as they are spread across multiple frames. We just
-                  use the max num_values we get
-                 */
-                if (num_values > _num_channels) {
-                    _num_channels = num_values;
-                }
-                if (!sbus_failsafe) {
-                    rc_input_count++;
-                }
-#if 0
-                printf("Decoded SBUS %u channels %u %u %u %u %u %u %u %u %s\n",
-                       (unsigned)num_values,
-                       values[0], values[1], values[2], values[3], values[4], values[5], values[6], values[7],
-                       sbus_failsafe?"FAIL":"OK");
-#endif
-            }
-        }
-    }
 }

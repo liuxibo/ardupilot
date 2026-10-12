@@ -14,8 +14,12 @@
  */
 
 #include "AP_Beacon_Backend.h"
+
+#if AP_BEACON_ENABLED
+
 // debug
 #include <stdio.h>
+#include <AP_SerialManager/AP_SerialManager.h>
 
 /*
   base class constructor. 
@@ -24,9 +28,18 @@
 AP_Beacon_Backend::AP_Beacon_Backend(AP_Beacon &frontend) :
     _frontend(frontend)
 {
+    const AP_SerialManager &serialmanager = AP::serialmanager();
+    uart = serialmanager.find_serial(AP_SerialManager::SerialProtocol_Beacon, 0);
+    if (uart == nullptr) {
+        return;
+    }
+
+    uart->begin(serialmanager.find_baudrate(AP_SerialManager::SerialProtocol_Beacon, 0));
 }
 
-// set vehicle position, pos should be in the beacon's local frame
+// set vehicle position
+// pos should be in meters in NED frame from the beacon's local origin
+// accuracy_estimate is also in meters
 void AP_Beacon_Backend::set_vehicle_position(const Vector3f& pos, float accuracy_estimate)
 {
     _frontend.veh_pos_update_ms = AP_HAL::millis();
@@ -34,7 +47,7 @@ void AP_Beacon_Backend::set_vehicle_position(const Vector3f& pos, float accuracy
     _frontend.veh_pos_ned = correct_for_orient_yaw(pos);
 }
 
-// set individual beacon distance in meters
+// set individual beacon distance from vehicle in meters in NED frame
 void AP_Beacon_Backend::set_beacon_distance(uint8_t beacon_instance, float distance)
 {
     // sanity check instance
@@ -52,8 +65,8 @@ void AP_Beacon_Backend::set_beacon_distance(uint8_t beacon_instance, float dista
     _frontend.beacon_state[beacon_instance].healthy = true;
 }
 
-// configure beacon's position in meters from origin
-// pos should be in the beacon's local frame
+// set beacon's position
+// pos should be in meters in NED from the beacon's local origin
 void AP_Beacon_Backend::set_beacon_position(uint8_t beacon_instance, const Vector3f& pos)
 {
     // sanity check instance
@@ -70,7 +83,7 @@ void AP_Beacon_Backend::set_beacon_position(uint8_t beacon_instance, const Vecto
     _frontend.beacon_state[beacon_instance].position = correct_for_orient_yaw(pos);
 }
 
-// rotate vector to correct for beacon system yaw orientation
+// rotate vector (meters) to correct for beacon system yaw orientation
 Vector3f AP_Beacon_Backend::correct_for_orient_yaw(const Vector3f &vector)
 {
     // exit immediately if no correction
@@ -80,7 +93,7 @@ Vector3f AP_Beacon_Backend::correct_for_orient_yaw(const Vector3f &vector)
 
     // check for change in parameter value and update constants
     if (orient_yaw_deg != _frontend.orient_yaw) {
-        _frontend.orient_yaw = wrap_180(_frontend.orient_yaw.get());
+        _frontend.orient_yaw.set(wrap_180(_frontend.orient_yaw.get()));
 
         // calculate rotation constants
         orient_yaw_deg = _frontend.orient_yaw;
@@ -95,3 +108,5 @@ Vector3f AP_Beacon_Backend::correct_for_orient_yaw(const Vector3f &vector)
     vec_rotated.z = vector.z;
     return vec_rotated;
 }
+
+#endif  // AP_BEACON_ENABLED

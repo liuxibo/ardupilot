@@ -15,15 +15,22 @@
 
 #pragma once
 
-namespace QURT {
-    class UARTDriver;
-    class UDPDriver;
-    class Util;
-    class Scheduler;
-    class Storage;
-    class Util;
-    class Semaphore;
-    class RCInput;
-    class RCOutput;
+namespace QURT
+{
+class UARTDriver;
+class UARTDriver_Console;
+class UARTDriver_MAVLinkUDP;
+class UARTDriver_Local;
+class UARTDriver_RemoteRegistered;
+class UDPDriver;
+class Util;
+class Scheduler;
+class Storage;
+class Util;
+class Semaphore;
+class RCInput;
+class RCOutput;
+class AnalogSource;
+class AnalogIn;
 }
 

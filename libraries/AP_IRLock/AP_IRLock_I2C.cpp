@@ -20,6 +20,10 @@
  *
  * See: http://irlock.com/pages/serial-communication-protocol
  */
+#include "AP_IRLock_config.h"
+
+#if AP_IRLOCK_I2C_ENABLED
+
 #include <AP_HAL/AP_HAL.h>
 #include "AP_IRLock_I2C.h"
 #include <stdio.h>
@@ -28,18 +32,20 @@
 
 extern const AP_HAL::HAL& hal;
 
-#define IRLOCK_I2C_ADDRESS		0x54
+#define IRLOCK_I2C_ADDRESS      0x54
 
-#define IRLOCK_SYNC			0xAA55AA55
+#define IRLOCK_SYNC         0xAA55AA55
 
-void AP_IRLock_I2C::init()
+void AP_IRLock_I2C::init(int8_t bus)
 {
-    dev = std::move(hal.i2c_mgr->get_device(1, IRLOCK_I2C_ADDRESS));
+    if (bus < 0) {
+        // default to i2c external bus
+        bus = 1;
+    }
+    dev = std::move(hal.i2c_mgr->get_device(bus, IRLOCK_I2C_ADDRESS));
     if (!dev) {
         return;
     }
-
-    sem = hal.util->new_semaphore();
 
     // read at 50Hz
     printf("Starting IRLock on I2C\n");
@@ -78,6 +84,7 @@ bool AP_IRLock_I2C::sync_frame_start(void)
 /*
   converts IRLOCK pixels to a position on a normal plane 1m in front of the lens
   based on a characterization of IR-LOCK with the standard lens, focused such that 2.38mm of threads are exposed
+  see: https://github.com/ArduPilot/ardupilot/issues/5232 and https://gist.github.com/jschall/eac130ed9d6e5dcd9ce582f3eeeb3071
  */
 void AP_IRLock_I2C::pixel_to_1M_plane(float pix_x, float pix_y, float &ret_x, float &ret_y)
 {
@@ -128,14 +135,14 @@ void AP_IRLock_I2C::read_frames(void)
     pixel_to_1M_plane(corner1_pix_x, corner1_pix_y, corner1_pos_x, corner1_pos_y);
     pixel_to_1M_plane(corner2_pix_x, corner2_pix_y, corner2_pos_x, corner2_pos_y);
 
-    if (sem->take(0)) {
+    {
+        WITH_SEMAPHORE(sem);
+
         /* convert to angles */
         _target_info.timestamp = AP_HAL::millis();
         _target_info.pos_x = 0.5f*(corner1_pos_x+corner2_pos_x);
         _target_info.pos_y = 0.5f*(corner1_pos_y+corner2_pos_y);
-        _target_info.size_x = corner2_pos_x-corner1_pos_x;
-        _target_info.size_y = corner2_pos_y-corner1_pos_y;
-        sem->give();
+        _target_info.pos_z = 1.0f;
     }
 
 #if 0
@@ -145,7 +152,7 @@ void AP_IRLock_I2C::read_frames(void)
         lastt = _target_info.timestamp;
         printf("pos_x:%.5f pos_y:%.5f size_x:%.6f size_y:%.5f\n", 
                _target_info.pos_x, _target_info.pos_y,
-               _target_info.size_x, _target_info.size_y);
+               (corner2_pos_x-corner1_pos_x), (corner2_pos_y-corner1_pos_y));
     }
 #endif
 }
@@ -154,17 +161,19 @@ void AP_IRLock_I2C::read_frames(void)
 bool AP_IRLock_I2C::update()
 {
     bool new_data = false;
-    if (!dev || !sem) {
+    if (!dev) {
         return false;
     }
-    if (sem->take(0)) {
-        if (_last_update_ms != _target_info.timestamp) {
-            new_data = true;
-        }
-        _last_update_ms = _target_info.timestamp;
-        _flags.healthy = (AP_HAL::millis() - _last_read_ms < 100);
-        sem->give();
+    WITH_SEMAPHORE(sem);
+
+    if (_last_update_ms != _target_info.timestamp) {
+        new_data = true;
     }
+    _last_update_ms = _target_info.timestamp;
+    _flags.healthy = (AP_HAL::millis() - _last_read_ms < 100);
+
     // return true if new data found
     return new_data;
 }
+
+#endif  // AP_IRLOCK_I2C_ENABLED

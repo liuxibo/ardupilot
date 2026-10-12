@@ -18,9 +18,11 @@
 #include "Semaphores.h"
 #include "Util.h"
 #include "OpticalFlow.h"
+#include "Flash.h"
+#include "DSP.h"
 
-#include "utility/Print.h"
-#include "utility/Stream.h"
+#include "CANIface.h"
+
 #include "utility/BetterStream.h"
 
 /* HAL Class definition */

@@ -30,12 +30,6 @@ public:
 
     virtual ~I2CDevice() { }
 
-    /*
-     * Change device address. Note that this is the 7 bit address, it
-     * does not include the bit for read/write.
-     */
-    virtual void set_address(uint8_t address) = 0;
-
     /* Device implementation */
 
     /* See Device::set_speed() */
@@ -62,12 +56,57 @@ public:
     /* See Device::adjust_periodic_callback() */
     virtual bool adjust_periodic_callback(
         Device::PeriodicHandle h, uint32_t period_usec) override = 0;
+
+    /*
+     * Force I2C transfers to be split between send and receive parts, with a
+     * stop condition between them. Setting this allows to conveniently
+     * continue using the read_* and transfer() methods on those devices.
+     *
+     * Some platforms may have transfers always split, in which case
+     * this method is not needed.
+     */
+    virtual void set_split_transfers(bool set) {};
 };
 
 class I2CDeviceManager {
 public:
-    /* Get a device handle */
-    virtual OwnPtr<AP_HAL::I2CDevice> get_device(uint8_t bus, uint8_t address) = 0;
+    /* Get a pointer to a newly-allocated I2CDevice handle.  Lifetime
+     * is externally handled */
+    virtual AP_HAL::I2CDevice *get_device_ptr(uint8_t bus, uint8_t address,
+                                              uint32_t bus_clock=400000,
+                                              bool use_smbus = false,
+                                              uint32_t timeout_ms=4) = 0;
+    /* Get a device handle.  Lifetime is handled by OwnPtr system.
+     * Progressively being eliminated */
+    OwnPtr<AP_HAL::I2CDevice> get_device(uint8_t bus, uint8_t address,
+                                         uint32_t bus_clock=400000,
+                                         bool use_smbus = false,
+                                         uint32_t timeout_ms=4) {
+        return AP_HAL::OwnPtr<AP_HAL::I2CDevice>(get_device_ptr(bus, address, bus_clock, use_smbus, timeout_ms));
+    }
+;
+    /*
+      get mask of bus numbers for all configured I2C buses
+     */
+    virtual uint32_t get_bus_mask(void) const { return 0x0F; }
+
+    /*
+      get mask of bus numbers for all configured external I2C buses
+     */
+    virtual uint32_t get_bus_mask_external(void) const { return 0x0F; }
+
+    /*
+      get mask of bus numbers for all configured internal I2C buses
+     */
+    virtual uint32_t get_bus_mask_internal(void) const { return 0x01; }
 };
+
+/*
+  convenient macros for iterating over I2C bus numbers
+ */
+#define FOREACH_I2C_MASK(i,mask) for (uint32_t _bmask=mask, i=0; i<32; i++) if ((1U<<i)&_bmask)
+#define FOREACH_I2C_EXTERNAL(i) FOREACH_I2C_MASK(i,hal.i2c_mgr->get_bus_mask_external())
+#define FOREACH_I2C_INTERNAL(i) FOREACH_I2C_MASK(i,hal.i2c_mgr->get_bus_mask_internal())
+#define FOREACH_I2C(i) FOREACH_I2C_MASK(i,hal.i2c_mgr->get_bus_mask())
 
 }

@@ -24,13 +24,13 @@
 
 #include <stdio.h>
 
-SITL::Calibration::Calibration(const char *home_str, const char *frame_str)
-    : Aircraft(home_str, frame_str)
+SITL::Calibration::Calibration(const char *frame_str)
+    : Aircraft(frame_str)
 {
     mass = 1.5f;
 }
 
-void SITL::Calibration::update(const struct sitl_input& input)
+void SITL::Calibration::update(const struct sitl_input &input)
 {
     Vector3f rot_accel{0, 0, 0};
 
@@ -45,15 +45,18 @@ void SITL::Calibration::update(const struct sitl_input& input)
         _angular_velocity_control(input, rot_accel);
     }
 
-    accel_body(0, 0, 0);
+    accel_body.zero();
     update_dynamics(rot_accel);
     update_position();
+    time_advance();
 
     // update magnetic field
     update_mag_field_bf();
+
+    update_battery();
 }
 
-void SITL::Calibration::_stop_control(const struct sitl_input& input,
+void SITL::Calibration::_stop_control(const struct sitl_input &input,
                                       Vector3f& rot_accel)
 {
     Vector3f desired_angvel{0, 0, 0};
@@ -64,7 +67,7 @@ void SITL::Calibration::_stop_control(const struct sitl_input& input,
     rot_accel *= 0.002f;
 }
 
-void SITL::Calibration::_attitude_control(const struct sitl_input& input,
+void SITL::Calibration::_attitude_control(const struct sitl_input &input,
                                           Vector3f& rot_accel)
 {
     float desired_roll = -M_PI + 2 * M_PI * (input.servos[5] - 1000) / 1000.f;
@@ -96,13 +99,13 @@ void SITL::Calibration::_attitude_set(float desired_roll, float desired_pitch, f
 
     Vector3f desired_angvel = angle_differential * (1 / dt);
     /* Provide a somewhat "smooth" transition */
-    desired_angvel *= .005f;
+    desired_angvel *= 0.005f;
 
     Vector3f error = desired_angvel - gyro;
     rot_accel = error * (1.0f / dt);
 }
 
-void SITL::Calibration::_angular_velocity_control(const struct sitl_input& in,
+void SITL::Calibration::_angular_velocity_control(const struct sitl_input &in,
                                                   Vector3f& rot_accel)
 {
     Vector3f axis{(float)(in.servos[5] - 1500),
@@ -120,7 +123,7 @@ void SITL::Calibration::_angular_velocity_control(const struct sitl_input& in,
 
     rot_accel = error * (1.0f / dt);
     /* Provide a somewhat "smooth" transition */
-    rot_accel *= .05f;
+    rot_accel *= 0.05f;
 }
 
 /*
@@ -171,6 +174,6 @@ void SITL::Calibration::_calibration_poses(Vector3f& rot_accel)
     r2.from_axis_angle(axis, rot_angle);
     dcm = r2 * dcm;
 
-    accel_body(0, 0, -GRAVITY_MSS);
+    accel_body = {0, 0, -GRAVITY_MSS};
     accel_body = dcm.transposed() * accel_body;
 }

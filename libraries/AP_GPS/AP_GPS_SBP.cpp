@@ -20,14 +20,16 @@
 //  Swift Binary Protocol format: http://docs.swift-nav.com/
 //
 
+
 #include "AP_GPS.h"
 #include "AP_GPS_SBP.h"
-#include <DataFlash/DataFlash.h>
+#include <AP_Logger/AP_Logger.h>
+
+#if AP_GPS_SBP_ENABLED
 
 extern const AP_HAL::HAL& hal;
 
 #define SBP_DEBUGGING 1
-#define SBP_HW_LOGGING 1
 
 #define SBP_TIMEOUT_HEATBEAT  4000
 #define SBP_TIMEOUT_PVT       500
@@ -44,15 +46,11 @@ do {                                            \
  # define Debug(fmt, args ...)
 #endif
 
-AP_GPS_SBP::AP_GPS_SBP(AP_GPS &_gps, AP_GPS::GPS_State &_state,
+AP_GPS_SBP::AP_GPS_SBP(AP_GPS &_gps,
+                       AP_GPS::Params &_params,
+                       AP_GPS::GPS_State &_state,
                        AP_HAL::UARTDriver *_port) :
-    AP_GPS_Backend(_gps, _state, _port),
-
-    last_injected_data_ms(0),
-    last_iar_num_hypotheses(0),
-    last_full_update_tow(0),
-    last_full_update_cpu_ms(0),
-    crc_error_counter(0)
+    AP_GPS_Backend(_gps, _params, _state, _port)
 {
 
     Debug("SBP Driver Initialized");
@@ -60,8 +58,7 @@ AP_GPS_SBP::AP_GPS_SBP(AP_GPS &_gps, AP_GPS::GPS_State &_state,
     parser_state.state = sbp_parser_state_t::WAITING;
 
     //Externally visible state
-    state.status = AP_GPS::NO_FIX;
-    state.have_vertical_velocity = true;
+    state.status = AP_GPS_FixType::NONE;
     state.last_gps_time_ms = last_heatbeat_received_ms = AP_HAL::millis();
 
 }
@@ -83,7 +80,7 @@ AP_GPS_SBP::read(void)
 
 }
 
-void 
+void
 AP_GPS_SBP::inject_data(const uint8_t *data, uint16_t len)
 {
 
@@ -99,11 +96,14 @@ AP_GPS_SBP::inject_data(const uint8_t *data, uint16_t len)
 //This attempts to reads all SBP messages from the incoming port.
 //Returns true if a new message was read, false if we failed to read a message.
 void
-AP_GPS_SBP::_sbp_process() 
+AP_GPS_SBP::_sbp_process()
 {
 
     while (port->available() > 0) {
         uint8_t temp = port->read();
+#if AP_GPS_DEBUG_LOGGING_ENABLED
+        log_data(&temp, 1);
+#endif
         uint16_t crc;
 
 
@@ -189,14 +189,17 @@ AP_GPS_SBP::_sbp_process_message() {
 
         case SBP_GPS_TIME_MSGTYPE:
             memcpy(&last_gps_time, parser_state.msg_buff, sizeof(last_gps_time));
+            check_new_itow(last_gps_time.tow, parser_state.msg_len);
             break;
 
         case SBP_VEL_NED_MSGTYPE:
             memcpy(&last_vel_ned, parser_state.msg_buff, sizeof(last_vel_ned));
+            check_new_itow(last_vel_ned.tow, parser_state.msg_len);
             break;
 
         case SBP_POS_LLH_MSGTYPE: {
             struct sbp_pos_llh_t *pos_llh = (struct sbp_pos_llh_t*)parser_state.msg_buff;
+            check_new_itow(pos_llh->tow, parser_state.msg_len);
             // Check if this is a single point or RTK solution
             // flags = 0 -> single point
             if (pos_llh->flags == 0) {
@@ -209,6 +212,7 @@ AP_GPS_SBP::_sbp_process_message() {
 
         case SBP_DOPS_MSGTYPE:
             memcpy(&last_dops, parser_state.msg_buff, sizeof(last_dops));
+            check_new_itow(last_dops.tow, parser_state.msg_len);
             break;
 
         case SBP_TRACKING_STATE_MSGTYPE:
@@ -223,12 +227,10 @@ AP_GPS_SBP::_sbp_process_message() {
         }
 
         default:
-            // log anyway if it's an unsupported message. 
+            // log anyway if it's an unsupported message.
             // The log mask will be used to adjust or suppress logging
-            break; 
+            break;
     }
-
-    logging_log_raw_sbp(parser_state.msg_type, parser_state.sender_id, parser_state.msg_len, parser_state.msg_buff);
 }
 
 bool
@@ -245,7 +247,7 @@ AP_GPS_SBP::_attempt_state_update()
 
     if (now - last_heatbeat_received_ms > SBP_TIMEOUT_HEATBEAT) {
 
-        state.status = AP_GPS::NO_GPS;
+        state.status = AP_GPS_FixType::NONE;
         Debug("No Heartbeats from Piksi! Driver Ready to Die!");
 
     } else if (last_pos_llh_rtk.tow == last_vel_ned.tow
@@ -263,41 +265,42 @@ AP_GPS_SBP::_attempt_state_update()
         state.hdop              = last_dops.hdop;
 
         // Update velocity state
-        state.velocity[0]       = (float)(last_vel_ned.n / 1000.0);
-        state.velocity[1]       = (float)(last_vel_ned.e / 1000.0);
-        state.velocity[2]       = (float)(last_vel_ned.d / 1000.0);
+        state.velocity[0]       = (float)(last_vel_ned.n * 1.0e-3);
+        state.velocity[1]       = (float)(last_vel_ned.e * 1.0e-3);
+        state.velocity[2]       = (float)(last_vel_ned.d * 1.0e-3);
+        state.have_vertical_velocity = true;
 
-        float ground_vector_sq = state.velocity[0]*state.velocity[0] + state.velocity[1]*state.velocity[1];
-        state.ground_speed = safe_sqrt(ground_vector_sq);
-
-        state.ground_course = wrap_360(degrees(atan2f(state.velocity[1], state.velocity[0])));
+        velocity_to_speed_course(state);
 
         // Update position state
 
-        state.location.lat      = (int32_t) (pos_llh->lat*1e7);
-        state.location.lng      = (int32_t) (pos_llh->lon*1e7);
-        state.location.alt      = (int32_t) (pos_llh->height*1e2);
+        state.location.lat      = (int32_t) (pos_llh->lat * (double)1e7);
+        state.location.lng      = (int32_t) (pos_llh->lon * (double)1e7);
+        state.location.alt      = (int32_t) (pos_llh->height * 100);
         state.num_sats          = pos_llh->n_sats;
 
         if (pos_llh->flags == 0) {
-            state.status = AP_GPS::GPS_OK_FIX_3D;
+            state.status = AP_GPS_FixType::FIX_3D;
         } else if (pos_llh->flags == 2) {
-            state.status = AP_GPS::GPS_OK_FIX_3D_RTK_FLOAT;
+            state.status = AP_GPS_FixType::RTK_FLOAT;
         } else if (pos_llh->flags == 1) {
-            state.status = AP_GPS::GPS_OK_FIX_3D_RTK_FIXED;
+            state.status = AP_GPS_FixType::RTK_FIXED;
         }
 
         last_full_update_tow = last_vel_ned.tow;
         last_full_update_cpu_ms = now;
+        state.rtk_iar_num_hypotheses = last_iar_num_hypotheses;
 
+#if HAL_LOGGING_ENABLED
         logging_log_full_update();
+#endif
         ret = true;
 
     } else if (now - last_full_update_cpu_ms > SBP_TIMEOUT_PVT) {
 
         //INVARIANT: If we currently have a fix, ONLY return true after a full update.
 
-        state.status = AP_GPS::NO_FIX;
+        state.status = AP_GPS_FixType::NONE;
         ret = true;
 
     } else {
@@ -329,6 +332,7 @@ AP_GPS_SBP::_detect(struct SBP_detect_state &state, uint8_t data)
             break;
 
         case SBP_detect_state::GET_TYPE:
+            *((uint8_t*)&(state.msg_type) + state.n_read) = data;
             state.crc_so_far = crc16_ccitt(&data, 1, state.crc_so_far);
             state.n_read += 1;
             if (state.n_read >= 2) {
@@ -354,6 +358,9 @@ AP_GPS_SBP::_detect(struct SBP_detect_state &state, uint8_t data)
             break;
 
         case SBP_detect_state::GET_MSG:
+            if (state.msg_type == SBP_HEARTBEAT_MSGTYPE && state.n_read < 4) {
+                *((uint8_t*)&(state.heartbeat_buff) + state.n_read) = data;
+            }
             state.crc_so_far = crc16_ccitt(&data, 1, state.crc_so_far);
             state.n_read += 1;
             if (state.n_read >= state.msg_len) {
@@ -367,7 +374,12 @@ AP_GPS_SBP::_detect(struct SBP_detect_state &state, uint8_t data)
             state.n_read += 1;
             if (state.n_read >= 2) {
                 state.state = SBP_detect_state::WAITING;
-                return state.crc == state.crc_so_far;
+                if (state.crc == state.crc_so_far
+                        && state.msg_type == SBP_HEARTBEAT_MSGTYPE) {
+                    struct sbp_heartbeat_t* heartbeat = ((struct sbp_heartbeat_t*)state.heartbeat_buff);
+                    return heartbeat->protocol_major == 0;
+                }
+                return false;
             }
             break;
 
@@ -378,14 +390,13 @@ AP_GPS_SBP::_detect(struct SBP_detect_state &state, uint8_t data)
     return false;
 }
 
-#if SBP_HW_LOGGING
-
-void 
+#if HAL_LOGGING_ENABLED
+void
 AP_GPS_SBP::logging_log_full_update()
 {
 
-    if (gps._DataFlash == nullptr || !gps._DataFlash->logging_started()) {
-      return;
+    if (!should_log()) {
+        return;
     }
 
     struct log_SbpHealth pkt = {
@@ -395,50 +406,9 @@ AP_GPS_SBP::logging_log_full_update()
         last_injected_data_ms      : last_injected_data_ms,
         last_iar_num_hypotheses    : last_iar_num_hypotheses,
     };
-    gps._DataFlash->WriteBlock(&pkt, sizeof(pkt));    
 
+    AP::logger().WriteBlock(&pkt, sizeof(pkt));
 };
+#endif // HAL_LOGGING_ENABLED
 
-void
-AP_GPS_SBP::logging_log_raw_sbp(uint16_t msg_type, 
-        uint16_t sender_id, 
-        uint8_t msg_len, 
-        uint8_t *msg_buff) {
-
-    if (gps._DataFlash == nullptr || !gps._DataFlash->logging_started()) {
-      return;
-    }
-
-    //MASK OUT MESSAGES WE DON'T WANT TO LOG
-    if (( ((uint16_t) gps._sbp_logmask) & msg_type) == 0) {
-        return;
-    }
-
-    uint64_t time_us = AP_HAL::micros64();
-
-    struct log_SbpRAW1 pkt = {
-        LOG_PACKET_HEADER_INIT(LOG_MSG_SBPRAW1),
-        time_us         : time_us,
-        msg_type        : msg_type,
-        sender_id       : sender_id,
-        msg_len         : msg_len,
-    };
-    memcpy(pkt.data1, msg_buff, MIN(msg_len,64)); 
-    gps._DataFlash->WriteBlock(&pkt, sizeof(pkt));    
-
-    if (msg_len > 64) {
-
-        struct log_SbpRAW2 pkt2 = {
-            LOG_PACKET_HEADER_INIT(LOG_MSG_SBPRAW2),
-            time_us         : time_us,
-            msg_type        : msg_type,
-        };
-        memcpy(pkt2.data2, &msg_buff[64], msg_len - 64);
-        gps._DataFlash->WriteBlock(&pkt2, sizeof(pkt2));    
-
-    }
-
-};
-
-
-#endif // SBP_HW_LOGGING
+#endif // AP_GPS_SBP_ENABLED

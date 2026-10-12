@@ -16,14 +16,15 @@
  */
 void Plane::failsafe_check(void)
 {
-    static uint16_t last_mainLoop_count;
+    static uint16_t last_ticks;
     static uint32_t last_timestamp;
     static bool in_failsafe;
     uint32_t tnow = micros();
 
-    if (perf.mainLoop_count != last_mainLoop_count) {
+    const uint16_t ticks = scheduler.ticks();
+    if (ticks != last_ticks) {
         // the main loop is running, all is OK
-        last_mainLoop_count = perf.mainLoop_count;
+        last_ticks = ticks;
         last_timestamp = tnow;
         in_failsafe = false;
         return;
@@ -38,28 +39,36 @@ void Plane::failsafe_check(void)
     }
 
     if (in_failsafe && tnow - last_timestamp > 20000) {
+
+        // ensure we have the latest RC inputs
+        rc().read_input();
+
         last_timestamp = tnow;
 
+        rc().read_input();
+
+#if AP_ADVANCEDFAILSAFE_ENABLED
         if (in_calibration) {
             // tell the failsafe system that we are calibrating
             // sensors, so don't trigger failsafe
             afs.heartbeat();
         }
+#endif
 
-        if (hal.rcin->num_channels() < 5) {
+        if (RC_Channels::get_valid_channel_count() < 5) {
             // we don't have any RC input to pass through
             return;
         }
 
         // pass RC inputs to outputs every 20ms
-        hal.rcin->clear_overrides();
+        RC_Channels::clear_overrides();
 
-        int16_t roll = channel_roll->get_control_in_zero_dz();
-        int16_t pitch = channel_pitch->get_control_in_zero_dz();
-        int16_t throttle = channel_throttle->get_control_in_zero_dz();
-        int16_t rudder = channel_rudder->get_control_in_zero_dz();
+        float roll = roll_in_expo(false);
+        float pitch = pitch_in_expo(false);
+        float throttle = get_throttle_input(true);
+        float rudder = rudder_in_expo(false);
 
-        if (!hal.util->get_soft_armed()) {
+        if (!arming.is_armed_and_safety_off()) {
             throttle = 0;
         }
         
@@ -74,22 +83,33 @@ void Plane::failsafe_check(void)
         // this is to allow the failsafe module to deliberately crash 
         // the plane. Only used in extreme circumstances to meet the
         // OBC rules
+#if AP_ADVANCEDFAILSAFE_ENABLED
         if (afs.should_crash_vehicle()) {
             afs.terminate_vehicle();
-            return;
+            if (!afs.terminating_vehicle_via_landing()) {
+                return;
+            }
         }
+#endif
 
         // setup secondary output channels that do have
         // corresponding input channels
         SRV_Channels::copy_radio_in_out(SRV_Channel::k_manual, true);
-        SRV_Channels::copy_radio_in_out(SRV_Channel::k_aileron_with_input, true);
-        SRV_Channels::copy_radio_in_out(SRV_Channel::k_elevator_with_input, true);
-        SRV_Channels::set_output_scaled(SRV_Channel::k_flap, 0);
-        SRV_Channels::set_output_scaled(SRV_Channel::k_flap_auto, 0);
+        SRV_Channels::set_output_scaled(SRV_Channel::k_flap, 0.0);
+        SRV_Channels::set_output_scaled(SRV_Channel::k_flap_auto, 0.0);
+
+        // setup flaperons
+        flaperon_update();
 
         servos_output();
-        
-        // setup flaperons
-        flaperon_update(0);
+
+        // in SITL we send through the servo outputs so we can verify
+        // we're manipulating surfaces
+#if CONFIG_HAL_BOARD == HAL_BOARD_SITL
+        GCS_MAVLINK *chan = gcs().chan(0);
+        if (HAVE_PAYLOAD_SPACE(chan->get_chan(), SERVO_OUTPUT_RAW)) {
+            chan->send_servo_output_raw();
+        }
+#endif
     }
 }

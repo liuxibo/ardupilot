@@ -1,6 +1,7 @@
-#!/usr/bin/env python
 # encoding: utf-8
 # (c) Siddharth Bharat Purohit, 3DRobotics Inc.
+
+# flake8: noqa
 
 """
 The **mavgen.py** program is a code generator which creates mavlink header files.
@@ -8,7 +9,7 @@ The **mavgen.py** program is a code generator which creates mavlink header files
 
 from waflib import Logs, Task, Utils, Node
 from waflib.TaskGen import feature, before_method, extension
-import os
+import sys
 import os.path
 from xml.etree import ElementTree as et
 
@@ -45,29 +46,23 @@ class mavgen(Task.Task):
                     node.parent.path_from(entry_point.parent),
                     path
                 )
-                if not path in names:
+                if path not in names:
                     names.append(path)
 
         return nodes, names
 
     def run(self):
-        python = self.env.get_flat('PYTHON')
-        mavgen = self.env.get_flat('MAVGEN')
-        out = self.env.get_flat('OUTPUT_DIR')
-        src = self.env.get_flat('SRC')
-        ret = self.exec_command('{} {} --lang=C --wire-protocol=2.0 --output {} {}'.format(
-                                python, mavgen, out, self.inputs[0].abspath()))
-
-        if ret != 0:
-            # ignore if there was a signal to the interpreter rather
-            # than a real error in the script. Some environments use a
-            # signed and some an unsigned return for this
-            if ret > 128 or ret < 0:
-                Logs.warn('mavgen crashed with code: {}'.format(ret))
-                ret = 0
-            else:
-                Logs.error('mavgen returned {} error code'.format(ret))
-        return ret
+        sys.path.insert(0,self.env.get_flat('MAVLINK_DIR'))
+        from pymavlink.generator import mavgen
+        class mavgen_options:
+            language = 'C'
+            wire_protocol = '2.0'
+            validate = False
+            output = self.env.get_flat('OUTPUT_DIR')
+        xml = self.inputs[0].abspath()
+        if mavgen.mavgen(mavgen_options(), [xml]):
+            return 0
+        return 1
 
     def post_run(self):
         super(mavgen, self).post_run()
@@ -83,7 +78,17 @@ def process_mavgen(self):
     if not hasattr(self, 'output_dir'):
         self.bld.fatal('mavgen: missing option output_dir')
 
-    inputs = self.to_nodes(self.source)
+    inputs = self.to_nodes(self.bld.srcnode.find_node(self.source))
+    # depend on fixed headers so a rebuild occurs if they change
+    mavlink_dir = self.env.get_flat('MAVLINK_DIR')
+    headers_dir = mavlink_dir+"/pymavlink/generator/C/include_v2.0"
+    headers = self.bld.root.find_node(headers_dir) # expected to be absolute
+    inputs.extend(headers.ant_glob("*.h"))
+    # also depend on the generator source itself
+    gen_src_dir = mavlink_dir+"/pymavlink/"
+    gen_src = self.bld.root.find_node(gen_src_dir)
+    inputs.extend(gen_src.ant_glob("__init__.py generator/*.py"))
+
     outputs = []
 
     self.source = []
@@ -94,17 +99,9 @@ def process_mavgen(self):
     task = self.create_task('mavgen', inputs, outputs)
     task.env['OUTPUT_DIR'] = self.output_dir.abspath()
 
-    task.env.env = dict(os.environ)
-    task.env.env['PYTHONPATH'] = task.env.MAVLINK_DIR
-
 def configure(cfg):
     """
     setup environment for mavlink header generator
     """
-    cfg.load('python')
-    cfg.check_python_version(minver=(2,7,0))
-
     env = cfg.env
-
     env.MAVLINK_DIR = cfg.srcnode.make_node('modules/mavlink/').abspath()
-    env.MAVGEN = env.MAVLINK_DIR  + '/pymavlink/tools/mavgen.py'

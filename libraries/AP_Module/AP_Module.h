@@ -27,14 +27,9 @@
  */
 #pragma once
 
-#include <AP_HAL/AP_HAL.h>
-#include <AP_AHRS/AP_AHRS.h>
+#if AP_MODULE_SUPPORTED
 
-#ifdef HAVE_LIBDL
-#define AP_MODULE_SUPPORTED 1
-#else
-#define AP_MODULE_SUPPORTED 0
-#endif
+#include <AP_Math/vector3.h>
 
 #ifndef AP_MODULE_DEFAULT_DIRECTORY
 #define AP_MODULE_DEFAULT_DIRECTORY "/usr/lib/ardupilot/modules"
@@ -53,7 +48,7 @@ public:
     static void call_hook_setup_complete(void);
     
     // call any AHRS_update hooks
-    static void call_hook_AHRS_update(const AP_AHRS_NavEKF &ahrs);
+    static void call_hook_AHRS_update(const class AP_AHRS &ahrs);
 
     // call any gyro_sample hooks
     static void call_hook_gyro_sample(uint8_t instance, float dt, const Vector3f &gyro);
@@ -90,3 +85,5 @@ private:
     // scan a module for hooks
     static void module_scan(const char *path);
 };
+
+#endif // AP_MODULE_SUPPORTED

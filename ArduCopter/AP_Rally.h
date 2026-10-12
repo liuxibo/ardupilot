@@ -12,20 +12,25 @@
    You should have received a copy of the GNU General Public License
    along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
- 
 #pragma once
+
+#include <AP_Rally/AP_Rally_config.h>
+
+#if HAL_RALLY_ENABLED
 
 #include <AP_Rally/AP_Rally.h>
 #include <AP_AHRS/AP_AHRS.h>
 
 class AP_Rally_Copter : public AP_Rally
 {
-
 public:
-    // constructor
-    AP_Rally_Copter(AP_AHRS &ahrs) : AP_Rally(ahrs) {};
+    AP_Rally_Copter() : AP_Rally() { }
+
+    /* Do not allow copies */
+    CLASS_NO_COPY(AP_Rally_Copter);
 
 private:
     bool is_valid(const Location &rally_point) const override;
-
 };
+
+#endif  // HAL_RALLY_ENABLED

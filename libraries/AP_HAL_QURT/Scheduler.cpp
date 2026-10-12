@@ -1,5 +1,4 @@
 #include <AP_HAL/AP_HAL.h>
-#if CONFIG_HAL_BOARD == HAL_BOARD_QURT
 
 #include "AP_HAL_QURT.h"
 #include "Scheduler.h"
@@ -11,13 +10,15 @@
 #include <sched.h>
 #include <errno.h>
 #include <stdio.h>
-#include <dspal/include/pthread.h>
-#include <dspal_types.h>
+#include <pthread.h>
 
 #include "UARTDriver.h"
 #include "Storage.h"
 #include "RCOutput.h"
+#include "RCInput.h"
 #include <AP_Scheduler/AP_Scheduler.h>
+#include <AP_SerialManager/AP_SerialManager.h>
+#include "Thread.h"
 
 using namespace QURT;
 
@@ -29,72 +30,135 @@ Scheduler::Scheduler()
 
 void Scheduler::init()
 {
-    _main_task_pid = getpid();
+    _main_thread_ctx = pthread_self();
 
     // setup the timer thread - this will call tasks at 1kHz
-	pthread_attr_t thread_attr;
-	struct sched_param param;
+    pthread_attr_t thread_attr;
+    struct sched_param param;
 
-	pthread_attr_init(&thread_attr);
-	pthread_attr_setstacksize(&thread_attr, 40960);
+    pthread_attr_init(&thread_attr);
+    pthread_attr_setstacksize(&thread_attr, 16000);
 
-	param.sched_priority = APM_TIMER_PRIORITY;
-	(void)pthread_attr_setschedparam(&thread_attr, &param);
+    param.sched_priority = APM_TIMER_PRIORITY;
+    (void)pthread_attr_setschedparam(&thread_attr, &param);
 
-	pthread_create(&_timer_thread_ctx, &thread_attr, &Scheduler::_timer_thread, this);
+    pthread_create(&_timer_thread_ctx, &thread_attr, &Scheduler::_timer_thread, this);
 
     // the UART thread runs at a medium priority
-	pthread_attr_init(&thread_attr);
-	pthread_attr_setstacksize(&thread_attr, 40960);
+    pthread_attr_init(&thread_attr);
+    pthread_attr_setstacksize(&thread_attr, 16000);
 
-	param.sched_priority = APM_UART_PRIORITY;
-	(void)pthread_attr_setschedparam(&thread_attr, &param);
+    param.sched_priority = APM_UART_PRIORITY;
+    (void)pthread_attr_setschedparam(&thread_attr, &param);
 
-	pthread_create(&_uart_thread_ctx, &thread_attr, &Scheduler::_uart_thread, this);
+    pthread_create(&_uart_thread_ctx, &thread_attr, &Scheduler::_uart_thread, this);
 
     // the IO thread runs at lower priority
-	pthread_attr_init(&thread_attr);
-	pthread_attr_setstacksize(&thread_attr, 40960);
+    pthread_attr_init(&thread_attr);
+    pthread_attr_setstacksize(&thread_attr, 16000);
 
-	param.sched_priority = APM_IO_PRIORITY;
-	(void)pthread_attr_setschedparam(&thread_attr, &param);
+    param.sched_priority = APM_IO_PRIORITY;
+    (void)pthread_attr_setschedparam(&thread_attr, &param);
 
-	pthread_create(&_io_thread_ctx, &thread_attr, &Scheduler::_io_thread, this);
+    pthread_create(&_io_thread_ctx, &thread_attr, &Scheduler::_io_thread, this);
 }
 
-void Scheduler::delay_microseconds(uint16_t usec) 
+#define APM_QURT_MAX_PRIORITY          (200 + 20)
+#define APM_QURT_TIMER_PRIORITY        (200 + 15)
+#define APM_QURT_UART_PRIORITY         (200 + 14)
+#define APM_QURT_NET_PRIORITY          (200 + 14)
+#define APM_QURT_RCIN_PRIORITY         (200 + 13)
+#define APM_QURT_MAIN_PRIORITY         (200 + 12)
+#define APM_QURT_IO_PRIORITY           (200 + 10)
+#define APM_QURT_SCRIPTING_PRIORITY    (200 + 1)
+#define AP_QURT_SENSORS_SCHED_PRIO     (200 + 12)
+
+uint8_t Scheduler::calculate_thread_priority(priority_base base, int8_t priority) const
 {
-    //pthread_yield();
-    usleep(usec);
+    uint8_t thread_priority = APM_QURT_IO_PRIORITY;
+    static const struct {
+        priority_base base;
+        uint8_t p;
+    } priority_map[] = {
+        { PRIORITY_BOOST, APM_QURT_MAIN_PRIORITY},
+        { PRIORITY_MAIN, APM_QURT_MAIN_PRIORITY},
+        { PRIORITY_SPI, AP_QURT_SENSORS_SCHED_PRIO+1},
+        { PRIORITY_I2C, AP_QURT_SENSORS_SCHED_PRIO},
+        { PRIORITY_CAN, APM_QURT_TIMER_PRIORITY},
+        { PRIORITY_TIMER, APM_QURT_TIMER_PRIORITY},
+        { PRIORITY_RCIN, APM_QURT_RCIN_PRIORITY},
+        { PRIORITY_IO, APM_QURT_IO_PRIORITY},
+        { PRIORITY_UART, APM_QURT_UART_PRIORITY},
+        { PRIORITY_STORAGE, APM_QURT_IO_PRIORITY},
+        { PRIORITY_SCRIPTING, APM_QURT_SCRIPTING_PRIORITY},
+        { PRIORITY_NET, APM_QURT_NET_PRIORITY},
+    };
+    for (const auto &m : priority_map) {
+        if (m.base == base) {
+            thread_priority = constrain_int16(m.p + priority, 1, APM_QURT_MAX_PRIORITY);
+            break;
+        }
+    }
+
+    return thread_priority;
+}
+
+/*
+  create a new thread
+*/
+bool Scheduler::thread_create(AP_HAL::MemberProc proc, const char *name, uint32_t stack_size, priority_base base, int8_t priority)
+{
+    Thread *thread = new Thread{(Thread::task_t)proc};
+    if (thread == nullptr) {
+        return false;
+    }
+
+    const uint8_t thread_priority = calculate_thread_priority(base, priority);
+
+    stack_size = MAX(stack_size, 8192U);
+
+    // Setting the stack size too large can cause odd behavior!!!
+    thread->set_stack_size(stack_size);
+
+    /*
+     * We should probably store the thread handlers and join() when exiting,
+     * but let's the thread manage itself for now.
+     */
+    thread->set_auto_free(true);
+
+    HAP_PRINTF("Starting thread %s: Priority %u\n", name, thread_priority);
+
+    if (!thread->start(name, SCHED_FIFO, thread_priority)) {
+        delete thread;
+        return false;
+    }
+
+    return true;
+}
+
+void Scheduler::delay_microseconds(uint16_t usec)
+{
+    qurt_timer_sleep(usec);
 }
 
 void Scheduler::delay(uint16_t ms)
 {
-    if (in_timerprocess()) {
-        ::printf("ERROR: delay() from timer process\n");
-        return;
-    }
-	uint64_t start = AP_HAL::micros64();
-    uint64_t now;
-    
-    while (((now=AP_HAL::micros64()) - start)/1000 < ms) {
+    uint64_t start = AP_HAL::micros64();
+
+    while ((AP_HAL::micros64() - start)/1000 < ms) {
         delay_microseconds(1000);
         if (_min_delay_cb_ms <= ms) {
-            if (_delay_cb) {
-                _delay_cb();
+            if (in_main_thread()) {
+                const auto old_task = hal.util->persistent_data.scheduler_task;
+                hal.util->persistent_data.scheduler_task = -4;
+                call_delay_cb();
+                hal.util->persistent_data.scheduler_task = old_task;
             }
         }
     }
 }
 
-void Scheduler::register_delay_callback(AP_HAL::Proc proc,
-                                            uint16_t min_time_ms) 
-{
-    _delay_cb = proc;
-    _min_delay_cb_ms = min_time_ms;
-}
-
-void Scheduler::register_timer_process(AP_HAL::MemberProc proc) 
+void Scheduler::register_timer_process(AP_HAL::MemberProc proc)
 {
     for (uint8_t i = 0; i < _num_timer_procs; i++) {
         if (_timer_proc[i] == proc) {
@@ -110,7 +174,7 @@ void Scheduler::register_timer_process(AP_HAL::MemberProc proc)
     }
 }
 
-void Scheduler::register_io_process(AP_HAL::MemberProc proc) 
+void Scheduler::register_io_process(AP_HAL::MemberProc proc)
 {
     for (uint8_t i = 0; i < _num_io_procs; i++) {
         if (_io_proc[i] == proc) {
@@ -126,17 +190,17 @@ void Scheduler::register_io_process(AP_HAL::MemberProc proc)
     }
 }
 
-void Scheduler::register_timer_failsafe(AP_HAL::Proc failsafe, uint32_t period_us) 
+void Scheduler::register_timer_failsafe(AP_HAL::Proc failsafe, uint32_t period_us)
 {
     _failsafe = failsafe;
 }
 
-void Scheduler::suspend_timer_procs() 
+void Scheduler::suspend_timer_procs()
 {
     _timer_suspended = true;
 }
 
-void Scheduler::resume_timer_procs() 
+void Scheduler::resume_timer_procs()
 {
     _timer_suspended = false;
     if (_timer_event_missed == true) {
@@ -145,10 +209,19 @@ void Scheduler::resume_timer_procs()
     }
 }
 
-void Scheduler::reboot(bool hold_in_bootloader) 
+void Scheduler::reboot(bool hold_in_bootloader)
 {
     HAP_PRINTF("**** REBOOT REQUESTED ****");
-    usleep(2000000);
+    // delay for printf to appear on USB monitor
+    qurt_timer_sleep(10000);
+
+    // tell host we want to reboot
+    struct qurt_rpc_msg msg {};
+    msg.msg_id = QURT_MSG_ID_REBOOT;
+    qurt_rpc_send(msg);
+
+    // wait for RPC to get through
+    qurt_timer_sleep(10000);
     exit(1);
 }
 
@@ -183,7 +256,6 @@ extern bool qurt_ran_overtime;
 void *Scheduler::_timer_thread(void *arg)
 {
     Scheduler *sched = (Scheduler *)arg;
-    uint32_t last_ran_overtime = 0;
 
     while (!sched->_hal_initialized) {
         sched->delay_microseconds(1000);
@@ -193,15 +265,6 @@ void *Scheduler::_timer_thread(void *arg)
 
         // run registered timers
         sched->_run_timers(true);
-
-        // process any pending RC output requests
-        ((RCOutput *)hal.rcout)->timer_update();
-
-        if (qurt_ran_overtime && AP_HAL::millis() - last_ran_overtime > 2000) {
-            last_ran_overtime = AP_HAL::millis();
-            printf("Overtime in task %d\n", (int)AP_Scheduler::current_task);
-            hal.console->printf("Overtime in task %d\n", (int)AP_Scheduler::current_task);
-        }
     }
     return nullptr;
 }
@@ -233,14 +296,26 @@ void *Scheduler::_uart_thread(void *arg)
         sched->delay_microseconds(1000);
     }
     while (true) {
-        sched->delay_microseconds(1000);
+        sched->delay_microseconds(200);
 
-        // process any pending serial bytes
-        //((UARTDriver *)hal.uartA)->timer_tick();
-        ((UARTDriver *)hal.uartB)->timer_tick();
-        ((UARTDriver *)hal.uartC)->timer_tick();
-        ((UARTDriver *)hal.uartD)->timer_tick();
-        ((UARTDriver *)hal.uartE)->timer_tick();
+        // process any pending serial bytes on fixed HAL serial slots
+        for (uint8_t i = 0; i < hal.num_serial; i++) {
+            auto *p = hal.serial(i);
+            if (p != nullptr) {
+                p->_timer_tick();
+            }
+        }
+
+        // and on any ports registered with AP_SerialManager (tunneled
+        // remote serial ports on QURT, networking ports, etc.). Hold
+        // port_sem since register_port() can splice this list at runtime.
+        {
+            auto &sm = AP::serialmanager();
+            WITH_SEMAPHORE(sm.port_sem);
+            for (auto *p = sm.registered_ports; p != nullptr; p = p->next) {
+                p->_timer_tick();
+            }
+        }
     }
     return nullptr;
 }
@@ -257,19 +332,27 @@ void *Scheduler::_io_thread(void *arg)
 
         // run registered IO processes
         sched->_run_io();
+
+        // update storage
+        hal.storage->_timer_tick();
+
+        // update RC input
+        ((QURT::RCInput *)hal.rcin)->_timer_tick();
     }
     return nullptr;
 }
 
-bool Scheduler::in_timerprocess() 
+bool Scheduler::in_main_thread() const
 {
-    return getpid() != _main_task_pid;
+    return pthread_equal(pthread_self(), _main_thread_ctx);
 }
 
-void Scheduler::system_initialized() {
+void Scheduler::set_system_initialized()
+{
+    _main_thread_ctx = pthread_self();
     if (_initialized) {
         AP_HAL::panic("PANIC: scheduler::system_initialized called"
-                   "more than once");
+                      "more than once");
     }
     _initialized = true;
 }
@@ -279,4 +362,3 @@ void Scheduler::hal_initialized(void)
     HAP_PRINTF("HAL is initialised");
     _hal_initialized = true;
 }
-#endif

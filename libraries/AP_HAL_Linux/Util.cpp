@@ -10,18 +10,13 @@
 #include <AP_HAL/AP_HAL.h>
 
 #include "Heat_Pwm.h"
-#include "ToneAlarm_Raspilot.h"
-#include "ToneAlarm_Disco.h"
 #include "Util.h"
 
 using namespace Linux;
 
 extern const AP_HAL::HAL& hal;
 
-static int state;
-#if CONFIG_HAL_BOARD_SUBTYPE == HAL_BOARD_SUBTYPE_LINUX_RASPILOT
-ToneAlarm_Raspilot Util::_toneAlarm;
-#elif CONFIG_HAL_BOARD_SUBTYPE == HAL_BOARD_SUBTYPE_LINUX_DISCO
+#if CONFIG_HAL_BOARD_SUBTYPE == HAL_BOARD_SUBTYPE_LINUX_DISCO
 ToneAlarm_Disco Util::_toneAlarm;
 #else
 ToneAlarm Util::_toneAlarm;
@@ -33,7 +28,7 @@ void Util::init(int argc, char * const *argv) {
 
 #ifdef HAL_UTILS_HEAT
 #if HAL_UTILS_HEAT == HAL_LINUX_HEAT_PWM
-    _heat = new Linux::HeatPwm(HAL_LINUX_HEAT_PWM_NUM,
+    _heat = NEW_NOTHROW Linux::HeatPwm(HAL_LINUX_HEAT_PWM_NUM,
                                HAL_LINUX_HEAT_KP,
                                HAL_LINUX_HEAT_KI,
                                HAL_LINUX_HEAT_PERIOD_NS);
@@ -41,7 +36,7 @@ void Util::init(int argc, char * const *argv) {
     #error Unrecognized Heat
 #endif // #if
 #else
-    _heat = new Linux::Heat();
+    _heat = NEW_NOTHROW Linux::Heat();
 #endif // #ifdef
 }
 
@@ -66,42 +61,27 @@ void Util::commandline_arguments(uint8_t &argc, char * const *&argv)
     argv = saved_argv;
 }
 
-bool Util::toneAlarm_init()
+uint64_t Util::get_hw_rtc() const
 {
-    return _toneAlarm.init();
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    const uint64_t seconds = ts.tv_sec;
+    const uint64_t nanoseconds = ts.tv_nsec;
+    return (seconds * 1000000ULL + nanoseconds/1000ULL);
 }
 
-void Util::toneAlarm_set_tune(uint8_t tone)
-{
-    _toneAlarm.set_tune(tone);
-}
+#ifndef AP_HAL_LINUX_SET_HW_RTC_ENABLED
+#define AP_HAL_LINUX_SET_HW_RTC_ENABLED 1
+#endif  // AP_HAL_LINUX_SET_HW_RTC_ENABLED
 
-void Util::_toneAlarm_timer_tick() {
-    if(state == 0) {
-        state = state + _toneAlarm.init_tune();
-    } else if (state == 1) {
-        state = state + _toneAlarm.set_note();
-    }
-    if (state == 2) {
-        state = state + _toneAlarm.play();
-    } else if (state == 3) {
-        state = 1;
-    }
-    
-    if (_toneAlarm.is_tune_comp()) {
-        state = 0;
-    }
-    
-}
-
-void Util::set_system_clock(uint64_t time_utc_usec)
+void Util::set_hw_rtc(uint64_t time_utc_usec)
 {
-#if CONFIG_HAL_BOARD_SUBTYPE != HAL_BOARD_SUBTYPE_LINUX_NONE
+#if AP_HAL_LINUX_SET_HW_RTC_ENABLED
     timespec ts;
-    ts.tv_sec = time_utc_usec/1.0e6;
-    ts.tv_nsec = (time_utc_usec % 1000000) * 1000;
-    clock_settime(CLOCK_REALTIME, &ts);    
-#endif    
+    ts.tv_sec = time_utc_usec/1000000ULL;
+    ts.tv_nsec = (time_utc_usec % 1000000ULL) * 1000ULL;
+    clock_settime(CLOCK_REALTIME, &ts);
+#endif  // AP_HAL_LINUX_SET_HW_RTC_ENABLED
 }
 
 bool Util::is_chardev_node(const char *path)
@@ -125,6 +105,59 @@ uint32_t Util::available_memory(void)
 {
     return 256*1024;
 }
+
+#ifndef HAL_LINUX_DEFAULT_SYSTEM_ID
+#define HAL_LINUX_DEFAULT_SYSTEM_ID "linux-unknown"
+#endif
+
+/*
+  get a (hopefully unique) machine ID
+ */
+bool Util::get_system_id_unformatted(uint8_t buf[], uint8_t &len)
+{
+    char *cbuf = (char *)buf;
+
+    // try first to use machine-id file. Most systems will have this
+    const char *paths[] = { "/etc/machine-id", "/var/lib/dbus/machine-id" };
+    for (uint8_t i=0; i<ARRAY_SIZE(paths); i++) {
+        int fd = open(paths[i], O_RDONLY);
+        if (fd == -1) {
+            continue;
+        }
+        ssize_t ret = read(fd, buf, len);
+        close(fd);
+        if (ret <= 0) {
+            continue;
+        }
+        len = ret;
+        char *p = strchr(cbuf, '\n');
+        if (p) {
+            *p = 0;
+        }
+        len = strnlen(cbuf, len);
+        return true;
+    }
+
+    // fallback to hostname
+    if (gethostname(cbuf, len) != 0) {
+        // use a default name so this always succeeds. Without it we can't
+        // implement some features (such as UAVCAN)
+        strncpy(cbuf, HAL_LINUX_DEFAULT_SYSTEM_ID, len);
+    }
+    len = strnlen(cbuf, len);
+    return true;
+}
+
+/*
+  as get_system_id_unformatted will already be ascii, we use the same
+  ID here
+ */
+bool Util::get_system_id(char buf[50])
+{
+    uint8_t len = 40;
+    return get_system_id_unformatted((uint8_t *)buf, len);
+}
+
 
 int Util::write_file(const char *path, const char *fmt, ...)
 {
@@ -179,6 +212,7 @@ int Util::read_file(const char *path, const char *fmt, ...)
 const char *Linux::Util::_hw_names[UTIL_NUM_HARDWARES] = {
     [UTIL_HARDWARE_RPI1]   = "BCM2708",
     [UTIL_HARDWARE_RPI2]   = "BCM2709",
+    [UTIL_HARDWARE_RPI4]   = "BCM2711",
     [UTIL_HARDWARE_BEBOP]  = "Mykonos3 board",
     [UTIL_HARDWARE_BEBOP2] = "Milos board",
     [UTIL_HARDWARE_DISCO]  = "Evinrude board",
@@ -208,4 +242,56 @@ int Util::get_hw_arm32()
 
     fclose(f);
     return -ENOENT;
+}
+
+/**
+ * This method will read random values with set size.
+ */
+bool Util::get_random_vals(uint8_t* data, size_t size)
+{
+    int dev_random = open("/dev/urandom", O_RDONLY);
+    if (dev_random < 0) {
+        return false;
+    }
+    ssize_t result = read(dev_random, data, size);
+    close(dev_random);
+    return result >= 0 && (size_t)result == size;
+}
+
+bool Util::parse_cpu_set(const char *str, cpu_set_t *cpu_set) const
+{
+    unsigned long cpu1, cpu2;
+    char *endptr, sep;
+
+    CPU_ZERO(cpu_set);
+
+    do {
+        cpu1 = strtoul(str, &endptr, 10);
+        if (str == endptr) {
+            return false;
+        }
+
+        str = endptr + 1;
+        sep = *endptr;
+        if (sep == ',' || sep == '\0') {
+            CPU_SET(cpu1, cpu_set);
+            continue;
+        }
+
+        if (sep != '-') {
+            return false;
+        }
+
+        cpu2 = strtoul(str, &endptr, 10);
+        if (str == endptr) {
+            return false;
+        }
+
+        str = endptr + 1;
+        for (; cpu1 <= cpu2; cpu1++) {
+            CPU_SET(cpu1, cpu_set);
+        }
+    } while (*endptr != '\0');
+
+    return true;
 }

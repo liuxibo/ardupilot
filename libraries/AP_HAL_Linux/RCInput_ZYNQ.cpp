@@ -1,5 +1,7 @@
 #include "RCInput_ZYNQ.h"
 
+#if AP_RCPROTOCOL_ZYNQ_ENABLED
+
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
@@ -16,7 +18,9 @@
 
 #include "GPIO.h"
 
+#ifndef RCIN_ZYNQ_PULSE_INPUT_BASE
 #define RCIN_ZYNQ_PULSE_INPUT_BASE  0x43c10000
+#endif
 
 extern const AP_HAL::HAL& hal;
 
@@ -45,9 +49,11 @@ void RCInput_ZYNQ::_timer_tick()
     // all F's means no samples available
     while((v = *pulse_input) != 0xffffffff) {
         // Hi bit indicates pin state, low bits denote pulse length
-        if(!(v & 0x80000000))
+        if(v & 0x80000000)
             _s0_time = (v & 0x7fffffff)/TICK_PER_US;
         else
             _process_rc_pulse(_s0_time, (v & 0x7fffffff)/TICK_PER_US);
     }
 }
+
+#endif  // AP_RCPROTOCOL_ZYNQ_ENABLED

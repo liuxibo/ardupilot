@@ -6,27 +6,35 @@
 */
 void Plane::parachute_check()
 {
-#if PARACHUTE == ENABLED
+#if HAL_PARACHUTE_ENABLED
     parachute.update();
+    parachute.check_sink_rate();
 #endif
 }
 
-#if PARACHUTE == ENABLED
+#if HAL_PARACHUTE_ENABLED
 
 /*
   parachute_release - trigger the release of the parachute
 */
 void Plane::parachute_release()
 {
-    if (parachute.released()) {
+    if (parachute.release_in_progress()) {
         return;
     }
-    
-    // send message to gcs and dataflash
-    gcs_send_text(MAV_SEVERITY_CRITICAL,"Parachute: Released");
+    if (parachute.released()) {
+        gcs().send_text(MAV_SEVERITY_CRITICAL,"Parachute: Released again");
+    } else {
+        gcs().send_text(MAV_SEVERITY_CRITICAL,"Parachute: Released");
+    }
 
     // release parachute
     parachute.release();
+
+#if AP_LANDINGGEAR_ENABLED
+    // deploy landing gear
+    g2.landing_gear.set_position(AP_LandingGear::LandingGear_Deploy);
+#endif
 }
 
 /*
@@ -41,17 +49,20 @@ bool Plane::parachute_manual_release()
         return false;
     }
 
-    if (parachute.alt_min() > 0 && relative_ground_altitude(false) < parachute.alt_min() &&
+    if (parachute.alt_min() > 0 && relative_ground_altitude(RangeFinderUse::NONE) < parachute.alt_min() &&
             auto_state.last_flying_ms > 0) {
         // Allow manual ground tests by only checking if flying too low if we've taken off
-        gcs_send_text_fmt(MAV_SEVERITY_WARNING, "Parachute: Too low");
+        gcs().send_text(MAV_SEVERITY_WARNING, "Parachute: Too low");
         return false;
     }
 
     // if we get this far release parachute
     parachute_release();
 
-    return true;
+#if AP_LANDINGGEAR_ENABLED
+    // deploy landing gear
+    g2.landing_gear.set_position(AP_LandingGear::LandingGear_Deploy);
+#endif
+    return true;    
 }
-
 #endif

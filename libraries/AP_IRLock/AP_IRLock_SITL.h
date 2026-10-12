@@ -6,35 +6,25 @@
  */
 #pragma once
 
-#include <AP_HAL/utility/Socket.h>
+#include "AP_IRLock_config.h"
 
-#include "IRLock.h"
+#if AP_IRLOCK_SITL_ENABLED
 
-class AP_IRLock_SITL : public IRLock
+#include "AP_IRLock.h"
+#include <SITL/SITL.h>
+
+class AP_IRLock_SITL : public AP_IRLock
 {
 public:
-    AP_IRLock_SITL();
-
     // init - initialize sensor library
-    virtual void init();
+    void init(int8_t bus) override;
 
     // retrieve latest sensor data - returns true if new data is available
-    virtual bool update();
+    bool update() override;
 
 private:
-
-    /*
-      reply packet sent from simulator to ArduPilot
-     */
-    struct irlock_packet {
-        uint64_t timestamp;  // in miliseconds
-        uint16_t num_targets;
-        float pos_x;
-        float pos_y;
-        float size_x;
-        float size_y;
-    };
-
-    uint32_t _last_timestamp;
-    SocketAPM sock;
+    SITL::SIM          *_sitl;                 // sitl instance pointer
+    uint32_t _last_timestamp = 0;
 };
+
+#endif  // AP_IRLOCK_SITL_ENABLED

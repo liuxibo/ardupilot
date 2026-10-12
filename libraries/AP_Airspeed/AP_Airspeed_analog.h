@@ -1,14 +1,17 @@
 #pragma once
 
+#include "AP_Airspeed_config.h"
+
+#if AP_AIRSPEED_ANALOG_ENABLED
+
 #include <AP_HAL/AP_HAL.h>
-#include <AP_Param/AP_Param.h>
 
 #include "AP_Airspeed_Backend.h"
 
 class AP_Airspeed_Analog : public AP_Airspeed_Backend
 {
 public:
-    AP_Airspeed_Analog(AP_Airspeed &frontend);
+    AP_Airspeed_Analog(AP_Airspeed &frontend, uint8_t _instance);
 
     // probe and initialise the sensor
     bool init(void) override;
@@ -22,3 +25,5 @@ public:
 private:
     AP_HAL::AnalogSource *_source;
 };
+
+#endif  // AP_AIRSPEED_ANALOG_ENABLED

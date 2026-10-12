@@ -16,6 +16,10 @@
   simulator connector for ardupilot version of CRRCSim
 */
 
+#include "SIM_config.h"
+
+#if AP_SIM_CRRCSIM_ENABLED
+
 #include "SIM_CRRCSim.h"
 
 #include <stdio.h>
@@ -26,8 +30,8 @@ extern const AP_HAL::HAL& hal;
 
 namespace SITL {
 
-CRRCSim::CRRCSim(const char *home_str, const char *frame_str) :
-    Aircraft(home_str, frame_str),
+CRRCSim::CRRCSim(const char *frame_str) :
+    Aircraft(frame_str),
     last_timestamp(0),
     sock(true)
 {
@@ -119,13 +123,9 @@ void CRRCSim::recv_fdm(const struct sitl_input &input)
     gyro = Vector3f(pkt.rollRate, pkt.pitchRate, pkt.yawRate);
     velocity_ef = Vector3f(pkt.speedN, pkt.speedE, pkt.speedD);
 
-    Location loc1, loc2;
-    loc2.lat = pkt.latitude * 1.0e7;
-    loc2.lng = pkt.longitude * 1.0e7;
-    memset(&loc1, 0, sizeof(loc1));
-    Vector2f posdelta = location_diff(loc1, loc2);
-    position.x = posdelta.x;
-    position.y = posdelta.y;
+    origin.lat = pkt.latitude * 1.0e7;
+    origin.lng = pkt.longitude * 1.0e7;
+    position.xy().zero();
     position.z = -pkt.altitude;
 
     airspeed = pkt.airspeed;
@@ -150,10 +150,14 @@ void CRRCSim::update(const struct sitl_input &input)
 {
     send_servos(input);
     recv_fdm(input);
+    update_battery();
     update_position();
+    time_advance();
 
     // update magnetic field
     update_mag_field_bf();
 }
 
 } // namespace SITL
+
+#endif  // AP_SIM_CRRCSIM_ENABLED

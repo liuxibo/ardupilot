@@ -21,6 +21,9 @@
 #include <AP_RPM/AP_RPM.h>
 #include <AP_HAL/AP_HAL.h>
 
+void setup();
+void loop();
+
 const AP_HAL::HAL& hal = AP_HAL::get_HAL();
 
 static AP_RPM RPM;
@@ -39,7 +42,7 @@ void loop(void)
 {
     RPM.update();
 
-    for (uint8_t ii = 0; ii<RPM.num_sensors(); ii++) {
+    for (uint8_t ii = 0; ii < RPM.num_sensors(); ii++) {
 
         // Determine sensor state
         if (RPM.healthy(ii)) {
@@ -53,10 +56,14 @@ void loop(void)
             sensor_state = '-';
         }
 
+        float rpm = -1;
+        RPM.get_rpm(ii, rpm);
         hal.console->printf("%u - (%c) RPM: %8.2f  Quality: %.2f  ",
-                ii, sensor_state, RPM.get_rpm(ii), RPM.get_signal_quality(ii));
+                            ii, sensor_state,
+                            (double)rpm,
+                            (double)RPM.get_signal_quality(ii));
 
-        if (ii+1<RPM.num_sensors()) {
+        if (ii+1 < RPM.num_sensors()) {
             // Print a seperating bar if more sensors to process
             hal.console->printf("|  ");
         }

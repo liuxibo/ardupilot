@@ -12,6 +12,10 @@
    You should have received a copy of the GNU General Public License
    along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
+#include "AP_Notify_config.h"
+
+#if AP_NOTIFY_EXTERNALLED_ENABLED
+
 #include "ExternalLED.h"
 
 #include "AP_Notify.h"
@@ -25,11 +29,6 @@ extern const AP_HAL::HAL& hal;
 
 bool ExternalLED::init(void)
 {
-    // return immediately if disabled
-    if (!AP_Notify::flags.external_leds) {
-        return false;
-    }
-
     // setup the main LEDs as outputs
     hal.gpio->pinMode(EXTERNAL_LED_ARMED, HAL_GPIO_OUTPUT);
     hal.gpio->pinMode(EXTERNAL_LED_GPS, HAL_GPIO_OUTPUT);
@@ -49,11 +48,6 @@ bool ExternalLED::init(void)
  */
 void ExternalLED::update(void)
 {
-    // return immediately if disabled
-    if (!AP_Notify::flags.external_leds) {
-        return;
-    }
-
     // reduce update rate from 50hz to 10hz
     _counter++;
     if (_counter < 5) {
@@ -116,12 +110,12 @@ void ExternalLED::update(void)
 
     // GPS led control
     switch (AP_Notify::flags.gps_status) {
-        case 0:
+        case AP_GPS_FixType::NO_GPS:
             // no GPS attached
             gps_led(false);
             break;
-        case 1:
-        case 2:
+        case AP_GPS_FixType::NONE:
+        case AP_GPS_FixType::FIX_2D:
             // GPS attached but no lock, blink at 4Hz
             switch(_counter2) {                             // Pattern: 3(off), 2(on), 3(off), 2(on), repeat
                 case 0:
@@ -140,7 +134,7 @@ void ExternalLED::update(void)
                     break;
             }
             break;
-        case 3:
+        default:
             // solid blue on gps lock
             gps_led(true);
             break;
@@ -195,7 +189,7 @@ void ExternalLED::update(void)
                 break;
         }
     }else{
-        if (AP_Notify::flags.failsafe_battery || AP_Notify::flags.failsafe_radio) {
+        if (AP_Notify::flags.failsafe_battery || AP_Notify::flags.failsafe_radio || AP_Notify::flags.failsafe_gcs) {
             // radio or battery failsafe indicated by fast flashing
             set_pattern(FAST_FLASH);
         } else {
@@ -252,3 +246,5 @@ void ExternalLED::motor_led2(bool on_off)
 bool ExternalLED::init(void) {return true;}
 void ExternalLED::update(void) {return;}
 #endif
+
+#endif  // AP_NOTIFY_EXTERNALLED_ENABLED

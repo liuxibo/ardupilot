@@ -19,23 +19,18 @@
 
 #include <AP_HAL/AP_HAL.h>
 #include <AP_Math/AP_Math.h>
-#include <AP_Vehicle/AP_Vehicle.h>
+#include <AP_Vehicle/AP_Vehicle_Type.h>
 #include "SRV_Channel.h"
 
 extern const AP_HAL::HAL& hal;
 
-SRV_Channel *SRV_Channels::channels;
-bool SRV_Channels::disabled_passthrough;
-bool SRV_Channels::initialised;
-Bitmask SRV_Channels::function_mask{SRV_Channel::k_nr_aux_servo_functions};
-SRV_Channels::srv_function SRV_Channels::functions[SRV_Channel::k_nr_aux_servo_functions];
 SRV_Channel::servo_mask_t SRV_Channel::have_pwm_mask;
 
 const AP_Param::GroupInfo SRV_Channel::var_info[] = {
     // @Param: MIN
     // @DisplayName: Minimum PWM
-    // @Description: minimum PWM pulse width. Typically 1000 is lower limit, 1500 is neutral and 2000 is upper limit.
-    // @Units: pwm
+    // @Description: minimum PWM pulse width in microseconds. Typically 1000 is lower limit, 1500 is neutral and 2000 is upper limit.
+    // @Units: PWM
     // @Range: 800 2200
     // @Increment: 1
     // @User: Standard
@@ -43,8 +38,8 @@ const AP_Param::GroupInfo SRV_Channel::var_info[] = {
 
     // @Param: MAX
     // @DisplayName: Maximum PWM
-    // @Description: maximum PWM pulse width. Typically 1000 is lower limit, 1500 is neutral and 2000 is upper limit.
-    // @Units: pwm
+    // @Description: maximum PWM pulse width in microseconds. Typically 1000 is lower limit, 1500 is neutral and 2000 is upper limit.
+    // @Units: PWM
     // @Range: 800 2200
     // @Increment: 1
     // @User: Standard
@@ -52,206 +47,216 @@ const AP_Param::GroupInfo SRV_Channel::var_info[] = {
 
     // @Param: TRIM
     // @DisplayName: Trim PWM
-    // @Description: Trim PWM pulse width. Typically 1000 is lower limit, 1500 is neutral and 2000 is upper limit.
-    // @Units: pwm
+    // @Description: Trim PWM pulse width in microseconds. Typically 1000 is lower limit, 1500 is neutral and 2000 is upper limit.
+    // @Units: PWM
     // @Range: 800 2200
     // @Increment: 1
     // @User: Standard
     AP_GROUPINFO("TRIM",  3, SRV_Channel, servo_trim, 1500),
-    
+
     // @Param: REVERSED
     // @DisplayName: Servo reverse
-    // @Description: Reverse servo operation. Set to 0 for normal operation. Set to 1 to reverse this channel.
+    // @Description: Reverse servo operation. Set to 0 for normal operation. Set to 1 to reverse this output channel.
     // @Values: 0:Normal,1:Reversed
     // @User: Standard
     AP_GROUPINFO("REVERSED",  4, SRV_Channel, reversed, 0),
 
     // @Param: FUNCTION
     // @DisplayName: Servo output function
-    // @Description: Function assigned to this servo. Seeing this to Disabled(0) will setup this output for control by auto missions or MAVLink servo set commands. any other value will enable the corresponding function
-    // @Values: 0:Disabled,1:RCPassThru,2:Flap,3:Flap_auto,4:Aileron,6:mount_pan,7:mount_tilt,8:mount_roll,9:mount_open,10:camera_trigger,11:release,12:mount2_pan,13:mount2_tilt,14:mount2_roll,15:mount2_open,16:DifferentialSpoiler1,17:DifferentialSpoiler2,18:AileronWithInput,19:Elevator,20:ElevatorWithInput,21:Rudder,24:Flaperon1,25:Flaperon2,26:GroundSteering,27:Parachute,28:EPM,29:LandingGear,30:EngineRunEnable,31:HeliRSC,32:HeliTailRSC,33:Motor1,34:Motor2,35:Motor3,36:Motor4,37:Motor5,38:Motor6,39:Motor7,40:Motor8,51:RCIN1,52:RCIN2,53:RCIN3,54:RCIN4,55:RCIN5,56:RCIN6,57:RCIN7,58:RCIN8,59:RCIN9,60:RCIN10,61:RCIN11,62:RCIN12,63:RCIN13,64:RCIN14,65:RCIN15,66:RCIN16,67:Ignition,68:Choke,69:Starter,70:Throttle,71:TrackerYaw,72:TrackerPitch
+    // @Description: Function assigned to this servo. Setting this to Disabled(0) will setup this output for control by auto missions or MAVLink servo set commands. any other value will enable the corresponding function
+    // @SortValues: AlphabeticalZeroAtTop
+    // @Values: -1:GPIO
+    // @Values{Plane, Copter, Rover, Sub}: -1:GPIO
+    // @Values: 0:Disabled
+    // @Values{Plane, Copter, Rover, Sub}: 0:Disabled
+    // @Values: 1:RCPassThru
+    // @Values{Plane, Copter, Rover, Sub}: 1:RCPassThru
+    // @Values: 2:Flap, 3:FlapAuto
+    // @Values{Plane}: 2:Flap,3:FlapAuto
+    // @Values: 4:Aileron
+    // @Values{Plane}: 4:Aileron
+    // @Values: 6:Mount1Yaw,7:Mount1Pitch,8:Mount1Roll,9:Mount1Retract
+    // @Values{Plane, Copter, Rover, Sub}: 6:Mount1Yaw,7:Mount1Pitch,8:Mount1Roll,9:Mount1Retract
+    // @Values: 10:CameraTrigger
+    // @Values{Plane, Copter, Rover}: 10:CameraTrigger
+    // @Values: 12:Mount2Yaw,13:Mount2Pitch,14:Mount2Roll,15:Mount2Retract
+    // @Values{Plane, Copter, Rover}: 12:Mount2Yaw,13:Mount2Pitch,14:Mount2Roll,15:Mount2Retract
+    // @Values: 16:DifferentialSpoilerLeft1,17:DifferentialSpoilerRight1
+    // @Values{Plane}: 16:DifferentialSpoilerLeft1,17:DifferentialSpoilerRight1
+    // @Values: 19:Elevator
+    // @Values{Plane}: 19:Elevator
+    // @Values: 21:Rudder
+    // @Values{Plane}: 21:Rudder
+    // @Values: 22:SprayerPump,23:SprayerSpinner
+    // @Values{Plane, Copter, Rover}: 22:SprayerPump,23:SprayerSpinner
+    // @Values: 24:FlaperonLeft,25:FlaperonRight
+    // @Values{Plane}: 24:FlaperonLeft,25:FlaperonRight
+    // @Values: 26:GroundSteering
+    // @Values{Plane, Rover}: 26:GroundSteering
+    // @Values: 27:Parachute
+    // @Values{Plane, Copter}: 27:Parachute
+    // @Values: 28:Gripper
+    // @Values{Plane, Copter, Rover, Sub}: 28:Gripper
+    // @Values: 29:LandingGear
+    // @Values{Plane, Copter}: 29:LandingGear
+    // @Values: 30:EngineRunEnable
+    // @Values{Plane, Copter}: 30:EngineRunEnable
+    // @Values: 31:HeliRSC,32:HeliTailRSC
+    // @Values{Copter}: 31:HeliRSC,32:HeliTailRSC
+    // @Values: 33:Motor1,34:Motor2,35:Motor3,36:Motor4,37:Motor5,38:Motor6,39:Motor7,40:Motor8
+    // @Values{Plane}: 33:Motor1,34:Motor2,35:Motor3,36:Motor4,37:Motor5,38:Motor6,39:Motor7/TailTiltServo,40:Motor8
+    // @Values{Copter, Sub}: 33:Motor1,34:Motor2,35:Motor3,36:Motor4,37:Motor5,38:Motor6,39:Motor7,40:Motor8
+    // @Values{Rover}: 33:Motor1,34:Motor2,35:Motor3,36:Motor4
+    // @Values: 41:TiltMotorsFront,45:TiltMotorsRear,46:TiltMotorRearLeft,47:TiltMotorRearRight
+    // @Values{Plane}: 41:TiltMotorsFront,45:TiltMotorsRear,46:TiltMotorRearLeft,47:TiltMotorRearRight
+    // @Values: 51:RCIN1,52:RCIN2,53:RCIN3,54:RCIN4,55:RCIN5,56:RCIN6,57:RCIN7,58:RCIN8,59:RCIN9,60:RCIN10,61:RCIN11,62:RCIN12,63:RCIN13,64:RCIN14,65:RCIN15,66:RCIN16
+    // @Values{Plane, Copter, Rover}: 51:RCIN1,52:RCIN2,53:RCIN3,54:RCIN4,55:RCIN5,56:RCIN6,57:RCIN7,58:RCIN8,59:RCIN9,60:RCIN10,61:RCIN11,62:RCIN12,63:RCIN13,64:RCIN14,65:RCIN15,66:RCIN16
+    // @Values{Sub}: 51:RCIN1/Pitch,52:RCIN2/Roll,53:RCIN3/HeaveVertical,54:RCIN4/YawTurn,55:RCIN5/SurgeForward,56:RCIN6/SwayLateral,57:RCIN7/CameraPan,58:RCIN8/CameraTilt,59:RCIN9,60:RCIN10,61:RCIN11,62:RCIN12,63:RCIN13,64:RCIN14,65:RCIN15,66:RCIN16
+    // @Values: 67:Ignition,69:Starter
+    // @Values{Plane}: 67:Ignition,69:Starter
+    // @Values: 70:Throttle
+    // @Values{Plane, Rover}: 70:Throttle
+    // @Values: 71:TrackerYaw,72:TrackerPitch
+    // @Values: 73:ThrottleLeft,74:ThrottleRight
+    // @Values{Plane, Copter, Rover}: 73:ThrottleLeft,74:ThrottleRight
+    // @Values: 75:TiltMotorFrontLeft,76:TiltMotorFrontRight
+    // @Values{Plane, Copter}: 75:TiltMotorFrontLeft,76:TiltMotorFrontRight
+    // @Values: 77:ElevonLeft,78:ElevonRight
+    // @Values{Plane}: 77:ElevonLeft,78:ElevonRight
+    // @Values: 79:VTailLeft,80:VTailRight
+    // @Values{Plane}: 79:VTailLeft,80:VTailRight
+    // @Values: 81:BoostThrottle
+    // @Values{Copter}: 81:BoostThrottle
+    // @Values: 82:Motor9,83:Motor10,84:Motor11,85:Motor12
+    // @Values{Plane, Copter, Sub}: 82:Motor9,83:Motor10,84:Motor11,85:Motor12
+    // @Values: 86:DifferentialSpoilerLeft2,87:DifferentialSpoilerRight2
+    // @Values{Plane}: 86:DifferentialSpoilerLeft2,87:DifferentialSpoilerRight2
+    // @Values: 88:Winch
+    // @Values{Copter, Rover, Sub}: 88:Winch
+    // @Values: 89:Main Sail
+    // @Values{Rover}: 89:Main Sail
+    // @Values: 90:CameraISO,91:CameraAperture,92:CameraFocus,93:CameraShutterSpeed
+    // @Values{Plane, Copter, Rover, Sub}: 90:CameraISO,91:CameraAperture,92:CameraFocus,93:CameraShutterSpeed
+    // @Values: 94:Script1,95:Script2,96:Script3,97:Script4,98:Script5,99:Script6,100:Script7,101:Script8,102:Script9,103:Script10,104:Script11,105:Script12,106:Script13,107:Script14,108:Script15,109:Script16
+    // @Values{Plane, Copter, Rover, Sub}: 94:Script1,95:Script2,96:Script3,97:Script4,98:Script5,99:Script6,100:Script7,101:Script8,102:Script9,103:Script10,104:Script11,105:Script12,106:Script13,107:Script14,108:Script15,109:Script16
+    // @Values{Plane}: 110:Airbrakes
+    // @Values: 120:NeoPixel1,121:NeoPixel2,122:NeoPixel3,123:NeoPixel4
+    // @Values{Plane, Copter, Rover, Sub}: 120:NeoPixel1,121:NeoPixel2,122:NeoPixel3,123:NeoPixel4
+    // @Values: 124:RateRoll,125:RatePitch,126:RateThrust,127:RateYaw
+    // @Values{Plane, Copter}: 124:RateRoll,125:RatePitch,126:RateThrust,127:RateYaw
+    // @Values: 128:WingSailElevator
+    // @Values{Rover}: 128:WingSailElevator
+    // @Values: 129:ProfiLED1,130:ProfiLED2,131:ProfiLED3,132:ProfiLEDClock
+    // @Values{Plane, Copter, Rover}: 129:ProfiLED1,130:ProfiLED2,131:ProfiLED3,132:ProfiLEDClock
+    // @Values: 133:Winch Clutch
+    // @Values{Copter, Rover}: 133:Winch Clutch
+    // @Values: 134:SERVOn_MIN,135:SERVOn_TRIM,136:SERVOn_MAX
+    // @Values{Plane, Copter, Rover, Sub}: 134:SERVOn_MIN,135:SERVOn_TRIM,136:SERVOn_MAX
+    // @Values: 137:SailMastRotation
+    // @Values{Rover}: 137:SailMastRotation
+    // @Values: 138:Alarm,139:Alarm Inverted
+    // @Values{Plane, Copter, Rover}: 138:Alarm,139:Alarm Inverted
+    // @Values: 140:RCIN1Scaled,141:RCIN2Scaled,142:RCIN3Scaled,143:RCIN4Scaled,144:RCIN5Scaled,145:RCIN6Scaled,146:RCIN7Scaled,147:RCIN8Scaled,148:RCIN9Scaled,149:RCIN10Scaled,150:RCIN11Scaled,151:RCIN12Scaled,152:RCIN13Scaled,153:RCIN14Scaled,154:RCIN15Scaled,155:RCIN16Scaled
+    // @Values{Plane, Copter, Rover}: 140:RCIN1Scaled,141:RCIN2Scaled,142:RCIN3Scaled,143:RCIN4Scaled,144:RCIN5Scaled,145:RCIN6Scaled,146:RCIN7Scaled,147:RCIN8Scaled,148:RCIN9Scaled,149:RCIN10Scaled,150:RCIN11Scaled,151:RCIN12Scaled,152:RCIN13Scaled,153:RCIN14Scaled,154:RCIN15Scaled,155:RCIN16Scaled
+    // @Values{Plane, Copter}: 160:Motor13,161:Motor14,162:Motor15,163:Motor16
+    // @Values{Plane, Copter}: 164:Motor17,165:Motor18,166:Motor19,167:Motor20
+    // @Values{Plane, Copter}: 168:Motor21,169:Motor22,170:Motor23,171:Motor24
+    // @Values{Plane, Copter}: 172:Motor25,173:Motor26,174:Motor27,175:Motor28
+    // @Values{Plane, Copter}: 176:Motor29,177:Motor30,178:Motor31,179:Motor32
+    // @Values: 180:CameraZoom
+    // @Values{Sub}: 181:Lights1,182:Lights2
+    // @Values{Sub}: 183:VideoSwitch
+    // @Values{Sub}: 184:Actuator1,185:Actuator2,186:Actuator3,187:Actuator4,188:Actuator5,189:Actuator6
     // @User: Standard
+    // @RebootRequired: True
     AP_GROUPINFO("FUNCTION",  5, SRV_Channel, function, 0),
-    
+
     AP_GROUPEND
 };
 
-
-const AP_Param::GroupInfo SRV_Channels::var_info[] = {
-    // @Group: 1_
-    // @Path: SRV_Channel.cpp
-    AP_SUBGROUPINFO(obj_channels[0], "1_",  1, SRV_Channels, SRV_Channel),
-
-    // @Group: 2_
-    // @Path: SRV_Channel.cpp
-    AP_SUBGROUPINFO(obj_channels[1], "2_",  2, SRV_Channels, SRV_Channel),
-
-    // @Group: 3_
-    // @Path: SRV_Channel.cpp
-    AP_SUBGROUPINFO(obj_channels[2], "3_",  3, SRV_Channels, SRV_Channel),
-
-    // @Group: 4_
-    // @Path: SRV_Channel.cpp
-    AP_SUBGROUPINFO(obj_channels[3], "4_",  4, SRV_Channels, SRV_Channel),
-
-    // @Group: 5_
-    // @Path: SRV_Channel.cpp
-    AP_SUBGROUPINFO(obj_channels[4], "5_",  5, SRV_Channels, SRV_Channel),
-
-    // @Group: 6_
-    // @Path: SRV_Channel.cpp
-    AP_SUBGROUPINFO(obj_channels[5], "6_",  6, SRV_Channels, SRV_Channel),
-
-    // @Group: 7_
-    // @Path: SRV_Channel.cpp
-    AP_SUBGROUPINFO(obj_channels[6], "7_",  7, SRV_Channels, SRV_Channel),
-
-    // @Group: 8_
-    // @Path: SRV_Channel.cpp
-    AP_SUBGROUPINFO(obj_channels[7], "8_",  8, SRV_Channels, SRV_Channel),
-
-    // @Group: 9_
-    // @Path: SRV_Channel.cpp
-    AP_SUBGROUPINFO(obj_channels[8], "9_",  9, SRV_Channels, SRV_Channel),
-
-    // @Group: 10_
-    // @Path: SRV_Channel.cpp
-    AP_SUBGROUPINFO(obj_channels[9], "10_",  10, SRV_Channels, SRV_Channel),
-
-    // @Group: 11_
-    // @Path: SRV_Channel.cpp
-    AP_SUBGROUPINFO(obj_channels[10], "11_",  11, SRV_Channels, SRV_Channel),
-
-    // @Group: 12_
-    // @Path: SRV_Channel.cpp
-    AP_SUBGROUPINFO(obj_channels[11], "12_",  12, SRV_Channels, SRV_Channel),
-
-    // @Group: 13_
-    // @Path: SRV_Channel.cpp
-    AP_SUBGROUPINFO(obj_channels[12], "13_",  13, SRV_Channels, SRV_Channel),
-
-    // @Group: 14_
-    // @Path: SRV_Channel.cpp
-    AP_SUBGROUPINFO(obj_channels[13], "14_",  14, SRV_Channels, SRV_Channel),
-
-    // @Group: 15_
-    // @Path: SRV_Channel.cpp
-    AP_SUBGROUPINFO(obj_channels[14], "15_",  15, SRV_Channels, SRV_Channel),
-
-    // @Group: 16_
-    // @Path: SRV_Channel.cpp
-    AP_SUBGROUPINFO(obj_channels[15], "16_",  16, SRV_Channels, SRV_Channel),
-    
-    // @Param: _AUTO_TRIM
-    // @DisplayName: Automatic servo trim
-    // @Description: This enables automatic servo trim in flight. Servos will be trimed in stabilized flight modes when the aircraft is close to level. Changes to servo trim will be saved every 10 seconds and will persist between flights.
-    // @Values: 0:Disable,1:Enable
-    // @User: Advanced
-    AP_GROUPINFO("_AUTO_TRIM",  17, SRV_Channels, auto_trim, 0),
-    
-    AP_GROUPEND
-};
 
 SRV_Channel::SRV_Channel(void)
 {
     AP_Param::setup_object_defaults(this, var_info);
     // start with all pwm at zero
-    have_pwm_mask = ~uint16_t(0);
-}
-
-
-/*
-  constructor
- */
-SRV_Channels::SRV_Channels(void)
-{
-    channels = obj_channels;
-    
-    // set defaults from the parameter table
-    AP_Param::setup_object_defaults(this, var_info);
-
-    // setup ch_num on channels
-    for (uint8_t i=0; i<NUM_SERVO_CHANNELS; i++) {
-        channels[i].ch_num = i;
-    }
-}
-
-/*
-  save adjusted trims
- */
-void SRV_Channels::save_trim(void)
-{
-    for (uint8_t i=0; i<NUM_SERVO_CHANNELS; i++) {
-        if (trimmed_mask & (1U<<i)) {
-            channels[i].servo_trim.set_and_save(channels[i].servo_trim.get());
-        }
-    }
-    trimmed_mask = 0;
+    have_pwm_mask = ~uint32_t(0);
 }
 
 // convert a 0..range_max to a pwm
-uint16_t SRV_Channel::pwm_from_range(int16_t scaled_value) const
+uint16_t SRV_Channel::pwm_from_range(float scaled_value) const
 {
     if (servo_max <= servo_min || high_out == 0) {
         return servo_min;
     }
-    if (scaled_value >= high_out) {
-        scaled_value = high_out;
-    }
-    if (scaled_value < 0) {
-        scaled_value = 0;
-    }
+    scaled_value = constrain_float(scaled_value, 0, high_out);
     if (reversed) {
         scaled_value = high_out - scaled_value;
     }
-    return servo_min + ((int32_t)scaled_value * (int32_t)(servo_max - servo_min)) / (int32_t)high_out;
+    return servo_min + uint16_t( (scaled_value * (float)(servo_max - servo_min)) / (float)high_out );
 }
 
 // convert a -angle_max..angle_max to a pwm
-uint16_t SRV_Channel::pwm_from_angle(int16_t scaled_value) const
+uint16_t SRV_Channel::pwm_from_angle(float scaled_value) const
 {
+    if (high_out == 0) {
+        return servo_trim;
+    }
     if (reversed) {
         scaled_value = -scaled_value;
     }
+    scaled_value = constrain_float(scaled_value, -high_out, high_out);
     if (scaled_value > 0) {
-        return servo_trim + ((int32_t)scaled_value * (int32_t)(servo_max - servo_trim)) / (int32_t)high_out;
+        return servo_trim + uint16_t( (scaled_value * (float)(servo_max - servo_trim)) / (float)high_out);
     } else {
-        return servo_trim - (-(int32_t)scaled_value * (int32_t)(servo_trim - servo_min)) / (int32_t)high_out;
+        return servo_trim - uint16_t( (-scaled_value * (float)(servo_trim - servo_min)) / (float)high_out);
     }
 }
 
-void SRV_Channel::calc_pwm(int16_t output_scaled)
+uint16_t SRV_Channel::pwm_from_scaled_value(float scaled_value) const
+{
+    if (type_angle) {
+        return pwm_from_angle(scaled_value);
+    } else {
+        return pwm_from_range(scaled_value);
+    }
+}
+
+void SRV_Channel::calc_pwm(float output_scaled)
 {
     if (have_pwm_mask & (1U<<ch_num)) {
+        // Note that this allows a set_output_pwm call to override E-Stop!!
+        // tricky to fix because we would endup E-stoping to individual SEROVx_MIN not MOT_PWM_MIN on copter
         return;
     }
-    uint16_t pwm;
-    if (type_angle) {
-        pwm = pwm_from_angle(output_scaled);
-    } else {
-        pwm = pwm_from_range(output_scaled);
+
+    // check for E - stop
+    bool force = false;
+    if (SRV_Channel::should_e_stop(get_function()) && SRV_Channels::emergency_stop) {
+        output_scaled = 0.0;
+        force = true;
     }
-    set_output_pwm(pwm);
+
+    if (!force && override_active) {
+        // don't overwrite a override
+        return;
+    }
+
+    output_pwm = pwm_from_scaled_value(output_scaled);
 }
 
-void SRV_Channels::output_trim_all(void)
+void SRV_Channel::set_output_pwm(uint16_t pwm, bool force)
 {
-    for (uint8_t i=0; i<NUM_SERVO_CHANNELS; i++) {
-        channels[i].set_output_pwm(channels[i].servo_trim);
+    if (!override_active || force) {
+        output_pwm = pwm;
+        have_pwm_mask |= (1U<<ch_num);
     }
 }
 
-void SRV_Channels::setup_failsafe_trim_all(void)
+// set normalised output from -1 to 1, assuming 0 at mid point of servo_min/servo_max
+void SRV_Channel::set_output_norm(float value)
 {
-    for (uint8_t i = 0; i < NUM_SERVO_CHANNELS; i++) {
-        hal.rcout->set_failsafe_pwm(1U<<channels[i].ch_num, channels[i].servo_trim);
-    }
-}
-
-void SRV_Channel::set_output_pwm(uint16_t pwm)
-{
-    output_pwm = pwm;
-    have_pwm_mask |= (1U<<ch_num);
+    // convert normalised value to pwm
+    set_output_pwm(pwm_from_scaled_value(value * high_out));
 }
 
 // set angular range of scaled output
@@ -288,32 +293,109 @@ float SRV_Channel::get_output_norm(void)
         ret = 0;
     }
     if (get_reversed()) {
-           ret = -ret;
+        ret = -ret;
     }
     return ret;
 }
 
-uint16_t SRV_Channel::get_limit_pwm(LimitValue limit) const
+uint16_t SRV_Channel::get_limit_pwm(Limit limit) const
 {
     switch (limit) {
-    case SRV_CHANNEL_LIMIT_TRIM:
+    case Limit::TRIM:
         return servo_trim;
-    case SRV_CHANNEL_LIMIT_MIN:
-        return servo_min;
-    case SRV_CHANNEL_LIMIT_MAX:
-        return servo_max;
-    case SRV_CHANNEL_LIMIT_ZERO_PWM:
-    default:
+    case Limit::MIN:
+        return reversed?servo_max:servo_min;
+    case Limit::MAX:
+        return reversed?servo_min:servo_max;
+    case Limit::ZERO_PWM:
         return 0;
     }
+    return 0;
 }
 
-/*
-  run calc_pwm for all channels
- */
-void SRV_Channels::calc_pwm(void)
+// return true if function is for a multicopter motor
+bool SRV_Channel::is_motor(SRV_Channel::Function function)
 {
-    for (uint8_t i=0; i<NUM_SERVO_CHANNELS; i++) {
-        channels[i].calc_pwm(functions[channels[i].function].output_scaled);
+    return ((function >= SRV_Channel::k_motor1 && function <= SRV_Channel::k_motor8) ||
+            (function >= SRV_Channel::k_motor9 && function <= SRV_Channel::k_motor12) ||
+            (function >= SRV_Channel::k_motor13 && function <= SRV_Channel::k_motor32));
+}
+
+// return true if function is for anything that should be stopped in a e-stop situation, ie is dangerous
+bool SRV_Channel::should_e_stop(SRV_Channel::Function function)
+{
+    switch (function) {
+    case Function::k_heli_rsc:  
+    case Function::k_heli_tail_rsc:
+    case Function::k_motor1:
+    case Function::k_motor2:
+    case Function::k_motor3:
+    case Function::k_motor4:
+    case Function::k_motor5:
+    case Function::k_motor6:
+    case Function::k_motor7:
+    case Function::k_motor8:
+    case Function::k_starter:
+    case Function::k_throttle:
+    case Function::k_throttleLeft:
+    case Function::k_throttleRight:
+    case Function::k_boost_throttle:
+    case Function::k_motor9:
+    case Function::k_motor10:
+    case Function::k_motor11:
+    case Function::k_motor12:
+    case Function::k_motor13 ... Function::k_motor32:
+    case Function::k_engine_run_enable:
+        return true;
+    default:
+        return false;
     }
+    return false;
+}
+
+// return true if function is for a control surface
+bool SRV_Channel::is_control_surface(SRV_Channel::Function function)
+{
+    switch (function) {
+    case Function::k_flap:
+    case Function::k_flap_auto:
+    case Function::k_aileron:
+    case Function::k_dspoilerLeft1:
+    case Function::k_dspoilerLeft2:
+    case Function::k_dspoilerRight1:
+    case Function::k_dspoilerRight2:
+    case Function::k_elevator:
+    case Function::k_rudder:
+    case Function::k_flaperon_left:
+    case Function::k_flaperon_right:
+    case Function::k_elevon_left:
+    case Function::k_elevon_right:
+    case Function::k_vtail_left:
+    case Function::k_vtail_right:
+    case Function::k_airbrake:
+        return true;
+
+    default:
+        return false;
+    }
+
+    return false;
+}
+
+// return the motor number of a channel, or -1 if not a motor
+// return 0 for first motor
+int8_t SRV_Channel::get_motor_num(void) const
+{
+    const auto k_function = get_function();
+    switch (k_function) {
+    case k_motor1 ... k_motor8:
+        return int8_t(uint16_t(k_function) - k_motor1);
+    case k_motor9 ... k_motor12:
+        return 8 + int8_t(uint16_t(k_function) - k_motor9);
+    case k_motor13 ... k_motor32:
+        return 12 + int8_t(uint16_t(k_function) - k_motor13);
+    default:
+        break;
+    }
+    return -1;
 }
